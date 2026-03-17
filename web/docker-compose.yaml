@@ -14,5 +14,29 @@ services:
       - "${WEB_POSTGRES_PORT:-5433}:5432"
     restart: unless-stopped
 
+  web-app:
+    image: python:3.12-slim
+    depends_on:
+      web-postgres:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      WEB_POSTGRES_HOST: web-postgres
+      WEB_POSTGRES_PORT: "5432"
+      WEB_APP_PORT: "8000"
+    working_dir: /app
+    volumes:
+      - ./app.py:/app/app.py
+    ports:
+      - "8000:8000"
+    command:
+      - sh
+      - -c
+      - |
+          pip install --no-cache-dir fastapi uvicorn psycopg2-binary
+          uvicorn app:app --host 0.0.0.0 --port "$${WEB_APP_PORT}"
+    restart: unless-stopped
+
 volumes:
   web-postgres-db-volume:
