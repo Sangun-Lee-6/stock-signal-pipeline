@@ -1,0 +1,18 @@
+services:
+  web-postgres:
+    image: postgres:16
+    env_file:
+      - ./.env
+    volumes:
+      - web-postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "${WEB_POSTGRES_PORT:-5433}:5432"
+    restart: unless-stopped
+
+volumes:
+  web-postgres-db-volume:

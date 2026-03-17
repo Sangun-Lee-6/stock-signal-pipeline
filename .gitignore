@@ -9,3 +9,7 @@ config/*
 
 AGENTS.md
 CONTEXT/
+
+logs/
+
+docs/

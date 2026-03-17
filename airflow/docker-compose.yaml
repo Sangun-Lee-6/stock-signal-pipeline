@@ -1,0 +1,132 @@
+services:
+  postgres:
+    image: postgres:16
+    env_file:
+      - ./.env
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    image: apache/airflow:3.1.8
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    command:
+      - bash
+      - -c
+      - |
+          set -e
+          airflow db migrate
+          airflow users create \
+            --username "$${AIRFLOW_ADMIN_USERNAME}" \
+            --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+            --firstname "$${AIRFLOW_ADMIN_FIRSTNAME}" \
+            --lastname "$${AIRFLOW_ADMIN_LASTNAME}" \
+            --role Admin \
+            --email "$${AIRFLOW_ADMIN_EMAIL}" || true
+          airflow variables set stock_signal_stock_code "$${STOCK_SIGNAL_STOCK_CODE}"
+          airflow variables set stock_signal_aws_access_key_id "$${STOCK_SIGNAL_AWS_ACCESS_KEY_ID}"
+          airflow variables set stock_signal_aws_secret_access_key "$${STOCK_SIGNAL_AWS_SECRET_ACCESS_KEY}"
+          airflow variables set stock_signal_aws_session_token "$${STOCK_SIGNAL_AWS_SESSION_TOKEN}"
+          airflow variables set stock_signal_s3_bucket "$${STOCK_SIGNAL_S3_BUCKET}"
+          airflow variables set stock_signal_s3_region "$${STOCK_SIGNAL_S3_REGION}"
+          airflow variables set stock_signal_s3_bronze_prefix "$${STOCK_SIGNAL_S3_BRONZE_PREFIX}"
+          airflow variables set stock_signal_s3_silver_prefix "$${STOCK_SIGNAL_S3_SILVER_PREFIX}"
+          airflow variables set stock_signal_web_postgres_host "$${STOCK_SIGNAL_WEB_POSTGRES_HOST}"
+          airflow variables set stock_signal_web_postgres_port "$${STOCK_SIGNAL_WEB_POSTGRES_PORT}"
+          airflow variables set stock_signal_web_postgres_db "$${STOCK_SIGNAL_WEB_POSTGRES_DB}"
+          airflow variables set stock_signal_web_postgres_user "$${STOCK_SIGNAL_WEB_POSTGRES_USER}"
+          airflow variables set stock_signal_web_postgres_password "$${STOCK_SIGNAL_WEB_POSTGRES_PASSWORD}"
+
+  airflow-api-server:
+    image: apache/airflow:3.1.8
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: api-server
+    restart: unless-stopped
+
+  airflow-scheduler:
+    image: apache/airflow:3.1.8
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    command: scheduler
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    image: apache/airflow:3.1.8
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    command: dag-processor
+    restart: unless-stopped
+
+volumes:
+  postgres-db-volume:
