@@ -10,8 +10,11 @@ import os # 환경변수를 읽을 때 사용
 from pathlib import Path # 파일 경로를 문자열보다 안전하게 다루기 위한 표준 라이브러리, `/`로 경로를 이어붙일 수 있어서 가독성이 좋음
 import pandas as pd # 여기선 silver 레이어를 parquet로 저장할 때 사용
 import pendulum # 날짜⋅시간 처리 라이브러리, 타임존을 다룰 때 사용
-import psycopg2 # PostgreSQL 연결 드라이버
 from pykrx import stock # 한국 주식 데이터를 가져오는 라이브러리
+from stock_signal.db import create_web_postgres_connection
+from stock_signal.queries import (
+    UPSERT_STOCK_PRICE_DAILY_MART_SQL,
+)
 
 
 LOCAL_S3_ROOT = Path("/opt/airflow/s3") # 상수 선언, S3 대신 로컬 파일시스템에서 개발하기 위함, S3로 교체 필요
@@ -137,81 +140,15 @@ def load_stock_price_to_web_postgres(silver_result: dict):
     silver_df = pd.read_parquet(silver_result["silver_path"])
     row = silver_df.iloc[0] # 1일 1종목에 대해 1행이므로 df 전체가 아니라 첫 행만 읽음
 
-    # postgresql 연결 생성
-    connection = psycopg2.connect(
-        host=os.environ.get("STOCK_SIGNAL_WEB_POSTGRES_HOST", "host.docker.internal"),
-        port=os.environ.get("STOCK_SIGNAL_WEB_POSTGRES_PORT", "5433"),
-        dbname=os.environ.get("STOCK_SIGNAL_WEB_POSTGRES_DB", "stock_signal"),
-        user=os.environ.get("STOCK_SIGNAL_WEB_POSTGRES_USER", "user"),
-        password=os.environ.get(
-            "STOCK_SIGNAL_WEB_POSTGRES_PASSWORD",
-            "password",
-        ),
-    )
-    
+    connection = create_web_postgres_connection()
+
     with connection: # 트랜잭션 경계
         with connection.cursor() as cursor:
-
-            # 테이블 생성
-            # TODO : DDL 분리
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS stock_price_daily_mart (
-                    stock_code VARCHAR(20) NOT NULL,
-                    stock_name VARCHAR(100) NOT NULL,
-                    trade_date DATE NOT NULL,
-                    open_price BIGINT NOT NULL,
-                    high_price BIGINT NOT NULL,
-                    low_price BIGINT NOT NULL,
-                    close_price BIGINT NOT NULL,
-                    volume BIGINT NOT NULL,
-                    price_change_rate DOUBLE PRECISION,
-                    source TEXT NOT NULL,
-                    bronze_path TEXT NOT NULL,
-                    silver_path TEXT NOT NULL,
-                    collected_at TIMESTAMPTZ NOT NULL,
-                    loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (stock_code, trade_date)
-                )
-                """
-            )
-
             # 신규 데이터면 INSERT(stock_code, trade_date 기준)
             # 이미 데이터가 존재하면 update(idempotent load)
             # EXCLUDED : 충돌 시 새로 들어오려던 값을 가리킴
             cursor.execute(
-                """
-                INSERT INTO stock_price_daily_mart (
-                    stock_code,
-                    stock_name,
-                    trade_date,
-                    open_price,
-                    high_price,
-                    low_price,
-                    close_price,
-                    volume,
-                    price_change_rate,
-                    source,
-                    bronze_path,
-                    silver_path,
-                    collected_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (stock_code, trade_date)
-                DO UPDATE SET
-                    stock_name = EXCLUDED.stock_name,
-                    open_price = EXCLUDED.open_price,
-                    high_price = EXCLUDED.high_price,
-                    low_price = EXCLUDED.low_price,
-                    close_price = EXCLUDED.close_price,
-                    volume = EXCLUDED.volume,
-                    price_change_rate = EXCLUDED.price_change_rate,
-                    source = EXCLUDED.source,
-                    bronze_path = EXCLUDED.bronze_path,
-                    silver_path = EXCLUDED.silver_path,
-                    collected_at = EXCLUDED.collected_at,
-                    loaded_at = NOW()
-                """,
+                UPSERT_STOCK_PRICE_DAILY_MART_SQL,
                 (
                     row["stock_code"],
                     row["stock_name"],
