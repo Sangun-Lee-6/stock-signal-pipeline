@@ -29,6 +29,7 @@ services:
     working_dir: /app
     volumes:
       - ./app.py:/app/app.py
+      - ./static:/app/static
     ports:
       - "8000:8000"
     command:
