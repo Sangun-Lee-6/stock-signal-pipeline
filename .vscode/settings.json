@@ -1,0 +1,9 @@
+{
+  "python.analysis.extraPaths": [
+    "airflow/plugins"
+  ],
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none"
+  }
+}
