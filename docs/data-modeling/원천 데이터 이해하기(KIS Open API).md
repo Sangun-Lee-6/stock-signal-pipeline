@@ -4,6 +4,7 @@
 
 - 데이터 1줄 표현 : 특정 시점에 조회한 특정 종목(LX세미콘)의 현재 시세 스냅샷 1건
 - 데이터 레코드 하나의 Grain : `collected_at` 시점의 `stock_code` 기준 시세 스냅샷 1건
+
   ```
   grain = collected_at x stock_code
   ```
