@@ -9,12 +9,13 @@
 | 토큰 발급 제한과 호출 제한 가능성이 있음 | `/tmp` 토큰 캐시를 재사용하고, 토큰 발급 제한(`EGW00133`) 시 캐시 fallback 또는 `61초` 대기 후 재발급 | 1분 주기 수집에서 불필요한 토큰 발급을 줄이도록 했다.      |
 | 종목 × 시점 기준 복구가 가능한 source    | bronze 경로를 `stock_code / collected_date / collection_id` 기준으로 분리                             | 종목 단위 재수집과 재처리 기준이 분명하다.                 |
 | 인증 정보가 raw에 섞이기 쉬움            | 저장 payload에서는 토큰, `appkey`, `appsecret`를 모두 마스킹                                          | raw 보관과 보안 요구를 같이 맞췄다.                        |
+| HTTP 200이어도 business error가 날 수 있음 | 응답 body의 `rt_cd`, `msg_cd`, `msg1`까지 확인하고 오류면 실패 처리                                    | 정상 HTTP 응답을 성공 데이터로 오인하지 않게 했다.         |
+| 장 시간 외 호출은 불필요한 외부 오류를 늘릴 수 있음 | `short_circuit`로 평일 `09:00~15:30`에만 실제 수집 실행                                                | 장 종료 후 호출과 오류 노이즈를 줄이도록 했다.             |
 
 ## 현재 구현 메모
 
 - 현재 수집 범위는 `LX세미콘(108320)` 1종목의 현재가 raw다.
 - raw payload에 `stock`, `authentication`, `request`, `response`, `collected_at`, `collection_id`를 함께 남겨 호출 문맥까지 복원 가능하게 했다.
-- 장 시간 체크용 `short_circuit` 훅은 준비돼 있지만, 현재는 테스트용으로 항상 통과하도록 열어둔 상태다.
 
 # 2. MK RSS
 
@@ -27,6 +28,7 @@
 | 같은 기사 목록이 반복 노출될 수 있음 | poll마다 `collection_id`를 발급해 snapshot 단위로 적재   | item-level dedup보다 원본 보존을 우선했다.                      |
 | 인증 없는 외부 feed                  | 단순 GET 요청으로 수집하되 `Accept`, `User-Agent`를 명시 | 외부 source 호출 계약을 코드에 드러냈다.                        |
 | 유실 시 원본 확인이 중요함           | `status`, `headers`, `body`를 그대로 저장                | 장애 시 feed 원문 기준으로 재현과 점검이 가능하다.              |
+| 외부 서버가 정상 응답 대신 HTML/비정상 body를 돌려줄 수 있음 | body가 실제 RSS/XML인지 최소 검증 후 아니면 실패 처리    | 잘못된 페이지를 raw snapshot으로 저장하지 않게 했다.            |
 
 ## 현재 구현 메모
 
@@ -45,10 +47,11 @@
 | 같은 날짜 범위를 재조회하면 중복이 생길 수 있음 | bronze를 `bgn_de / end_de / collection_id / page_no` 기준으로 저장                 | 재수집 이력과 page 단위 재처리 경계가 명확하다.            |
 | 공시가 없는 날짜도 정상 케이스임                | 응답 status `000`뿐 아니라 `013`도 정상으로 처리                                   | "데이터 없음"을 실패로 보지 않아 운영 잡음을 줄였다.       |
 | API key 기반 외부 시스템                        | 환경변수로 키를 읽고, 저장 payload에는 `crtfc_key`를 마스킹                        | raw 보관 시 보안 이슈를 차단했다.                          |
+| HTTP는 성공이어도 API body status가 일시 오류일 수 있음 | body `status` 검증 실패도 retry 경로 안에서 다시 시도                              | HTTP 200만으로 성공 처리하지 않도록 보완했다.              |
+| page 일부만 저장되면 partial collection 판단이 필요함 | `page manifest`를 `manifest.json`으로 함께 저장                                    | `total_page`와 실제 저장 page 수를 비교할 수 있게 했다.    |
 
 ## 현재 구현 메모
 
 - 기본 요청값은 `last_reprt_at=Y`, `sort=date`, `sort_mth=desc`, `page_count=100`이다.
 - 수집 시각은 `19:00(Asia/Seoul)` 기준 하루 1회로 두어, 당일 공시가 대부분 마감된 뒤 일괄 수집하게 했다.
-- page manifest는 DAG 내부에서 page 확장용 메타데이터로 사용하고, bronze에는 page raw만 저장한다.
 - API 호출은 최대 3회 재시도하며, 짧은 backoff를 둬 일시적 오류에 대응한다.
