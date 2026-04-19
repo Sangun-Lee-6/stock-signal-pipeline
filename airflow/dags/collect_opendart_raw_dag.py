@@ -7,7 +7,9 @@ from airflow.operators.python import get_current_context
 from opendart_pipeline import (
     collect_opendart_page_manifest,
     collect_opendart_raw_page,
+    write_opendart_bronze_to_silver,
     write_opendart_raw_to_bronze,
+    write_opendart_silver_to_mart,
 )
 
 
@@ -65,15 +67,29 @@ def collect_opendart_raw():
     def write_raw_to_bronze(raw_payload):
         return write_opendart_raw_to_bronze(raw_payload)
 
+    # page별 bronze 저장 결과를 읽어 공시 1건 단위 silver parquet로 변환한다.
+    @task
+    def write_bronze_to_silver(bronze_result):
+        return write_opendart_bronze_to_silver(bronze_result)
+
+    # silver parquet 공시들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
+    @task
+    def write_silver_to_mart(silver_result):
+        return write_opendart_silver_to_mart(silver_result)
+
     # 실행 순서:
     # 1. page manifest 수집
     # 2. page별 수집 요청 생성
     # 3. page별 raw 데이터 수집
     # 4. page별 bronze 저장
+    # 5. page별 silver 변환
+    # 6. page별 DuckDB mart 적재
     page_manifest_task = collect_page_manifest()
     page_requests_task = build_page_requests(page_manifest_task)
     raw_payloads_task = collect_raw_page.expand(page_request=page_requests_task)
-    write_raw_to_bronze.expand(raw_payload=raw_payloads_task)
+    bronze_results_task = write_raw_to_bronze.expand(raw_payload=raw_payloads_task)
+    silver_results_task = write_bronze_to_silver.expand(bronze_result=bronze_results_task)
+    write_silver_to_mart.expand(silver_result=silver_results_task)
 
 
 collect_opendart_raw()
