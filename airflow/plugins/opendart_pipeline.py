@@ -35,13 +35,27 @@ def collect_opendart_page_manifest(query_params):
     collection_id = _build_collection_id(collected_at)
     request_params = _build_request_params(query_params, api_key)
     first_page_response = _request_page_response(base_url, request_params, 1)
-    return _build_page_manifest(
+    page_manifest = _build_page_manifest(
         base_url,
         collected_at,
         collection_id,
         request_params,
         first_page_response,
     )
+    manifest_dir = (
+        LOCAL_S3_ROOT
+        / "bronze"
+        / OPENDART_SOURCE
+        / f"bgn_de={request_params['bgn_de']}"
+        / f"end_de={request_params['end_de']}"
+        / f"collection_id={collection_id}"
+    )
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(page_manifest, file, ensure_ascii=False, indent=2)
+    page_manifest["manifest_path"] = str(manifest_path)
+    return page_manifest
 
 
 # 지정한 페이지의 OpenDART 공시 목록 raw 응답 1건을 수집하고 bronze 저장용 payload를 반환한다.
