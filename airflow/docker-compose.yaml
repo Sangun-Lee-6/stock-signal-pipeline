@@ -27,6 +27,7 @@ services:
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       PYTHONPATH: /opt/airflow/plugins
+      _PIP_ADDITIONAL_REQUIREMENTS: duckdb
     user: "${AIRFLOW_UID:-50000}:0"
     volumes:
       - ./dags:/opt/airflow/dags
@@ -38,6 +39,7 @@ services:
       - -c
       - |
           set -e
+          pip install --user --no-cache-dir duckdb
           airflow db migrate
           airflow users create \
             --username "$${AIRFLOW_ADMIN_USERNAME}" \
@@ -77,6 +79,7 @@ services:
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       PYTHONPATH: /opt/airflow/plugins
+      _PIP_ADDITIONAL_REQUIREMENTS: duckdb
     user: "${AIRFLOW_UID:-50000}:0"
     volumes:
       - ./dags:/opt/airflow/dags
@@ -85,7 +88,13 @@ services:
       - ./s3:/opt/airflow/s3
     ports:
       - "8080:8080"
-    command: api-server
+    command:
+      - bash
+      - -c
+      - |
+          set -e
+          pip install --user --no-cache-dir duckdb
+          exec airflow api-server
     restart: unless-stopped
 
   airflow-scheduler:
@@ -105,13 +114,20 @@ services:
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       PYTHONPATH: /opt/airflow/plugins
+      _PIP_ADDITIONAL_REQUIREMENTS: duckdb
     user: "${AIRFLOW_UID:-50000}:0"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - ./s3:/opt/airflow/s3
-    command: scheduler
+    command:
+      - bash
+      - -c
+      - |
+          set -e
+          pip install --user --no-cache-dir duckdb
+          exec airflow scheduler
     restart: unless-stopped
 
   airflow-dag-processor:
@@ -131,13 +147,20 @@ services:
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
       AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       PYTHONPATH: /opt/airflow/plugins
+      _PIP_ADDITIONAL_REQUIREMENTS: duckdb
     user: "${AIRFLOW_UID:-50000}:0"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
       - ./s3:/opt/airflow/s3
-    command: dag-processor
+    command:
+      - bash
+      - -c
+      - |
+          set -e
+          pip install --user --no-cache-dir duckdb
+          exec airflow dag-processor
     restart: unless-stopped
 
 volumes:
