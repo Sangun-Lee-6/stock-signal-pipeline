@@ -30,16 +30,12 @@ def collect_kis_stock_price_raw():
     # short_circuit task는 False를 반환하면 downstream task를 모두 skip
     @task.short_circuit
     def check_market_window():
-        # 테스트가 끝나면 아래 주석만 해제해서 장 시간 체크를 바로 활성화하면 된다.
-        # context = get_current_context()
-        # now_kst = context["logical_date"].in_timezone("Asia/Seoul")
-        # is_weekday = now_kst.weekday() < 5
-        # is_after_open = (now_kst.hour, now_kst.minute) >= (9, 0)
-        # is_before_close = (now_kst.hour, now_kst.minute) <= (15, 30)
-        # return is_weekday and is_after_open and is_before_close
-
-        # 테스트 중에는 장 시간 체크를 끄고 downstream task를 항상 실행한다.
-        return True
+        context = get_current_context()
+        now_kst = context["logical_date"].in_timezone("Asia/Seoul")
+        is_weekday = now_kst.weekday() < 5
+        is_after_open = (now_kst.hour, now_kst.minute) >= (9, 0)
+        is_before_close = (now_kst.hour, now_kst.minute) <= (15, 30)
+        return is_weekday and is_after_open and is_before_close
 
     # KIS OpenAPI를 호출해서 raw payload를 만든다.
     # 이 task는 아직 파일을 쓰지 않고, 다음 task에 넘길 데이터만 반환한다.
