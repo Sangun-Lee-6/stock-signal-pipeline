@@ -33,6 +33,30 @@ def write_mk_rss_raw_to_bronze(raw_payload):
     return _build_write_result(raw_payload, bronze_path)
 
 
+# bronze 저장 결과 dict를 읽어 RSS 기사 단위 silver parquet들로 저장하고 저장 결과를 반환한다.
+def write_mk_rss_bronze_to_silver(bronze_result):
+    import pandas as pd
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+
+    bronze_path = Path(bronze_result["bronze_path"])
+    raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+    root = ET.fromstring(raw_payload["response"]["body"])
+    channel = root.find("channel")
+    processed_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    silver_paths = []
+    for item in channel.findall("item") if channel is not None else []:
+        article_url = (item.findtext("link") or "").strip()
+        article_id = ((item.findtext("no") or article_url.rstrip("/").split("/")[-1]).strip() or f"collection_{raw_payload['collection_id']}")
+        published_at = parsedate_to_datetime((item.findtext("pubDate") or "").strip()).isoformat()
+        published_date = pendulum.parse(published_at).format("YYYY-MM-DD")
+        silver_path = LOCAL_S3_ROOT / "silver" / "silver_news_event" / f"source_feed={raw_payload['source_feed']}" / f"published_date={published_date}" / f"article_id={article_id}" / "data.parquet"
+        silver_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([{"source": raw_payload["source"], "collection_id": raw_payload["collection_id"], "source_feed": raw_payload["source_feed"], "source_feed_name": raw_payload["source_feed_name"], "article_id": article_id, "article_url": article_url or None, "title": (item.findtext("title") or "").strip() or None, "description": (item.findtext("description") or "").strip() or None, "author": (item.findtext("author") or "").strip() or None, "category_names": [category.text.strip() for category in item.findall("category") if category.text and category.text.strip()] or None, "published_at": published_at, "published_date": published_date, "collected_at": raw_payload["collected_at"], "processed_at": processed_at}]).to_parquet(silver_path, index=False)
+        silver_paths.append(str(silver_path))
+    return {"collection_id": raw_payload["collection_id"], "source_feed": raw_payload["source_feed"], "article_count": len(silver_paths), "silver_paths": silver_paths}
+
+
 # 수집 시각 기준으로 bronze 저장 경로에 사용할 collection_id를 만든다.
 def _build_collection_id(collected_at):
     return f"{collected_at.format('YYYYMMDDTHHmmss')}_{uuid.uuid4().hex[:8]}"
