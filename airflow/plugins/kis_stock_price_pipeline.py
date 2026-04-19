@@ -59,6 +59,44 @@ def write_stock_price_raw_to_bronze(raw_payload):
     return _build_write_result(raw_payload, bronze_path)
 
 
+# bronze 저장 결과 dict를 읽어 KIS silver parquet 1건을 저장하고 저장 결과를 반환한다.
+def write_stock_price_bronze_to_silver(bronze_result):
+    import pandas as pd
+
+    bronze_path = Path(bronze_result["bronze_path"])
+    raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+    collected_at = pendulum.parse(raw_payload["collected_at"])
+    processed_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    output = raw_payload["response"]["body"]["output"]
+    to_bool = lambda value: {"Y": True, "N": False}.get(value)
+    to_number = lambda value: None if value in (None, "") else pd.to_numeric([value], errors="coerce")[0]
+    silver_path = LOCAL_S3_ROOT / "silver" / "silver_stock_price" / f"stock_code={raw_payload['stock']['stock_code']}" / f"price_date={collected_at.format('YYYY-MM-DD')}" / f"collection_id={raw_payload['collection_id']}" / "data.parquet"
+    silver_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"source": raw_payload["source"], "collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "market_division_code": raw_payload["stock"]["market_division_code"], "market_name": output.get("rprs_mrkt_kor_name"), "industry_name": output.get("bstp_kor_isnm"), "price_at": raw_payload["collected_at"], "price_date": collected_at.format("YYYY-MM-DD"), "collected_at": raw_payload["collected_at"], "processed_at": processed_at, "current_price": to_number(output.get("stck_prpr")), "open_price": to_number(output.get("stck_oprc")), "high_price": to_number(output.get("stck_hgpr")), "low_price": to_number(output.get("stck_lwpr")), "base_price": to_number(output.get("stck_sdpr")), "change_value": to_number(output.get("prdy_vrss")), "change_rate": to_number(output.get("prdy_ctrt")), "volume_accumulated": to_number(output.get("acml_vol")), "trade_amount_accumulated": to_number(output.get("acml_tr_pbmn")), "per": to_number(output.get("per")), "pbr": to_number(output.get("pbr")), "eps": to_number(output.get("eps")), "bps": to_number(output.get("bps")), "is_trading_halted": to_bool(output.get("temp_stop_yn")), "is_credit_available": to_bool(output.get("crdt_able_yn"))}]).to_parquet(silver_path, index=False)
+    return {"collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "price_at": raw_payload["collected_at"], "silver_path": str(silver_path)}
+
+
+# silver 저장 결과 dict를 읽어 KIS mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
+def write_stock_price_silver_to_mart(silver_result):
+    try:
+        import duckdb
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Airflow 실행 환경에 duckdb 패키지가 없습니다.") from exc
+    silver_path = Path(silver_result["silver_path"])
+    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
+    loaded_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    mart_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(mart_path)) as connection:
+        connection.execute("CREATE SCHEMA IF NOT EXISTS mart")
+        connection.execute("CREATE SCHEMA IF NOT EXISTS serving")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_stock (stock_id BIGINT, stock_code VARCHAR, stock_name VARCHAR, market_division_code VARCHAR, market_name VARCHAR, industry_name VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.fact_stock_price (stock_id BIGINT, price_at TIMESTAMP, price_date DATE, current_price DECIMAL(18,2), open_price DECIMAL(18,2), high_price DECIMAL(18,2), low_price DECIMAL(18,2), change_rate DECIMAL(9,4), volume_accumulated BIGINT, trade_amount_accumulated DECIMAL(18,2), source VARCHAR, collection_id VARCHAR, collected_at TIMESTAMP, processed_at TIMESTAMP)")
+        connection.execute("INSERT INTO mart.dim_stock SELECT COALESCE((SELECT MAX(stock_id) FROM mart.dim_stock), 0) + ROW_NUMBER() OVER (ORDER BY src.stock_code), src.stock_code, src.stock_name, src.market_division_code, src.market_name, src.industry_name, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM (SELECT DISTINCT stock_code, stock_name, market_division_code, market_name, industry_name FROM read_parquet(?)) AS src WHERE NOT EXISTS (SELECT 1 FROM mart.dim_stock AS dim WHERE dim.stock_code = src.stock_code)", [loaded_at, loaded_at, str(silver_path)])
+        connection.execute("INSERT INTO mart.fact_stock_price SELECT dim.stock_id, CAST(src.price_at AS TIMESTAMP), CAST(src.price_date AS DATE), CAST(src.current_price AS DECIMAL(18,2)), CAST(src.open_price AS DECIMAL(18,2)), CAST(src.high_price AS DECIMAL(18,2)), CAST(src.low_price AS DECIMAL(18,2)), CAST(src.change_rate AS DECIMAL(9,4)), CAST(src.volume_accumulated AS BIGINT), CAST(src.trade_amount_accumulated AS DECIMAL(18,2)), src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src INNER JOIN mart.dim_stock AS dim ON src.stock_code = dim.stock_code WHERE NOT EXISTS (SELECT 1 FROM mart.fact_stock_price AS fact WHERE fact.stock_id = dim.stock_id AND fact.price_at = CAST(src.price_at AS TIMESTAMP))", [loaded_at, str(silver_path)])
+        connection.execute("CREATE OR REPLACE VIEW serving.v_stock_price_timeline AS SELECT stock.stock_code, stock.stock_name, price.price_at, price.price_date, price.current_price, price.open_price, price.high_price, price.low_price, price.change_rate, price.volume_accumulated, price.trade_amount_accumulated, price.source, price.collection_id, price.collected_at, price.processed_at FROM mart.fact_stock_price AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id")
+    return {"collection_id": silver_result["collection_id"], "stock_code": silver_result["stock_code"], "stock_name": silver_result["stock_name"], "price_at": silver_result["price_at"], "mart_path": str(mart_path)}
+
+
 # 토큰 캐시를 포함해 현재 유효한 접근 토큰과 토큰 응답 메타데이터를 가져온다.
 def _get_access_token(token_request):
     cached_token_payload, cached_expires_at = _read_cached_token()
