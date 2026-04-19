@@ -37,6 +37,14 @@ def collect_stock_price_raw():
     access_token, token_response = _get_access_token(token_request)
     quote_request = _build_quote_request(base_url, app_key, app_secret, access_token)
     quote_response = _request_json("GET", quote_request, "KIS 주식현재가 조회 실패")
+    quote_body = quote_response["body"]
+    if str(quote_body.get("rt_cd")) != "0":
+        raise RuntimeError(
+            "KIS 주식현재가 조회 실패: "
+            f"rt_cd={quote_body.get('rt_cd')}, "
+            f"msg_cd={quote_body.get('msg_cd')}, "
+            f"msg1={quote_body.get('msg1')}"
+        )
     return _build_collected_stock_price_payload(
         token_request,
         token_response,
