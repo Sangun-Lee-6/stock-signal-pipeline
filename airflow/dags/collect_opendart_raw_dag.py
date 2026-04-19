@@ -4,14 +4,6 @@ import pendulum
 from airflow.decorators import dag, task
 from airflow.operators.python import get_current_context
 
-from opendart_pipeline import (
-    collect_opendart_page_manifest,
-    collect_opendart_raw_page,
-    write_opendart_bronze_to_silver,
-    write_opendart_raw_to_bronze,
-    write_opendart_silver_to_mart,
-)
-
 
 # OpenDART 공시 목록 raw 데이터를 하루 1회 수집해서 bronze에 저장하는 DAG.
 # 오케스트레이션은 DAG가 맡고, 실제 API 호출/파일 저장 로직은 plugin 함수가 맡는다.
@@ -29,13 +21,15 @@ from opendart_pipeline import (
     tags=["stock-signal", "opendart", "raw", "bronze"],
 )
 def collect_opendart_raw():
+    import opendart_pipeline
+
     # 실행 날짜를 OpenDART 조회 파라미터로 바꿔 page manifest를 먼저 만든다.
     # 이 task는 전체 페이지 수와 공통 메타데이터만 반환한다.
     @task
     def collect_page_manifest():
         logical_date = get_current_context()["logical_date"].in_timezone("Asia/Seoul")
         target_date = logical_date.format("YYYYMMDD")
-        return collect_opendart_page_manifest({"bgn_de": target_date, "end_de": target_date})
+        return opendart_pipeline.collect_opendart_page_manifest({"bgn_de": target_date, "end_de": target_date})
 
     # manifest를 바탕으로 page별 수집 요청 목록을 만든다.
     @task
@@ -60,22 +54,22 @@ def collect_opendart_raw():
     # page별 OpenDART raw payload를 수집한다.
     @task
     def collect_raw_page(page_request):
-        return collect_opendart_raw_page(page_request)
+        return opendart_pipeline.collect_opendart_raw_page(page_request)
 
     # Airflow는 task 반환값을 XCom으로 전달하므로, 여기서는 raw_payload 인자로 받는다.
     @task
     def write_raw_to_bronze(raw_payload):
-        return write_opendart_raw_to_bronze(raw_payload)
+        return opendart_pipeline.write_opendart_raw_to_bronze(raw_payload)
 
     # page별 bronze 저장 결과를 읽어 공시 1건 단위 silver parquet로 변환한다.
     @task
     def write_bronze_to_silver(bronze_result):
-        return write_opendart_bronze_to_silver(bronze_result)
+        return opendart_pipeline.write_opendart_bronze_to_silver(bronze_result)
 
     # silver parquet 공시들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
     @task
     def write_silver_to_mart(silver_result):
-        return write_opendart_silver_to_mart(silver_result)
+        return opendart_pipeline.write_opendart_silver_to_mart(silver_result)
 
     # 실행 순서:
     # 1. page manifest 수집
