@@ -1,44 +1,23 @@
 services:
-  web-postgres:
-    image: postgres:16
-    env_file:
-      - ./.env
-    volumes:
-      - ./initdb:/docker-entrypoint-initdb.d
-      - web-postgres-db-volume:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "${WEB_POSTGRES_PORT:-5433}:5432"
-    restart: unless-stopped
-
   web-app:
     image: python:3.12-slim
-    depends_on:
-      web-postgres:
-        condition: service_healthy
     env_file:
       - ./.env
     environment:
-      WEB_POSTGRES_HOST: web-postgres
-      WEB_POSTGRES_PORT: "5432"
       WEB_APP_PORT: "8000"
+      WEB_DUCKDB_PATH: /data/mart/stock_signal.duckdb
+      WEB_DUCKDB_READ_ONLY: "true"
     working_dir: /app
     volumes:
       - ./app.py:/app/app.py
       - ./static:/app/static
+      - ../airflow/s3/mart:/data/mart
     ports:
       - "8000:8000"
     command:
       - sh
       - -c
       - |
-          pip install --no-cache-dir fastapi uvicorn psycopg2-binary
+          pip install --no-cache-dir fastapi uvicorn duckdb
           uvicorn app:app --host 0.0.0.0 --port "$${WEB_APP_PORT}"
     restart: unless-stopped
-
-volumes:
-  web-postgres-db-volume:
