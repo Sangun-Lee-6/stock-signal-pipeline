@@ -53,7 +53,14 @@ def _request_rss(request_config, error_context):
             _build_http_request(request_config),
             timeout=30,
         ) as response:
-            return _read_response(response)
+            rss_response = _read_response(response)
+            rss_body = rss_response["body"].lstrip()
+            if not (
+                rss_body.startswith("<?xml")
+                or rss_body.startswith("<rss")
+            ) or "<rss" not in rss_body:
+                raise RuntimeError(f"{error_context}: RSS XML 응답이 아닙니다.")
+            return rss_response
     except error.HTTPError as exc:
         _raise_http_error(exc, error_context)
     except error.URLError as exc:
