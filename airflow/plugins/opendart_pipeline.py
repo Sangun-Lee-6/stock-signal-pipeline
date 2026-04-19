@@ -103,9 +103,15 @@ def _build_request_params(query_params, api_key):
 # 특정 페이지의 OpenDART 공시 목록 응답 1건을 요청하고 검증된 결과만 반환한다.
 def _request_page_response(base_url, request_params, page_no):
     page_request = _build_page_request(base_url, request_params, page_no)
-    page_response = _request_json("GET", page_request, "OpenDART 공시목록 조회 실패")
-    _validate_response_body(page_response["body"])
-    return page_response
+    for attempt in range(OPENDART_REQUEST_MAX_ATTEMPTS):
+        try:
+            page_response = _request_json_once("GET", page_request)
+            _validate_response_body(page_response["body"])
+            return page_response
+        except RuntimeError as exc:
+            if attempt == OPENDART_REQUEST_MAX_ATTEMPTS - 1:
+                raise RuntimeError(f"OpenDART 공시목록 조회 실패: {exc}") from exc
+            time.sleep(_build_backoff_seconds(attempt))
 
 
 # 특정 페이지 번호를 포함한 OpenDART 요청 설정을 만든다.
