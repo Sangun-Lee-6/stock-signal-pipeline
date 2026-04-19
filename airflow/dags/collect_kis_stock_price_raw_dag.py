@@ -6,7 +6,9 @@ from airflow.operators.python import get_current_context
 
 from kis_stock_price_pipeline import (
     collect_stock_price_raw,
+    write_stock_price_bronze_to_silver,
     write_stock_price_raw_to_bronze,
+    write_stock_price_silver_to_mart,
 )
 
 
@@ -48,16 +50,36 @@ def collect_kis_stock_price_raw():
     def write_raw_to_bronze(raw_payload):
         return write_stock_price_raw_to_bronze(raw_payload)
 
+    # bronze 저장 결과를 읽어 silver parquet로 변환한다.
+    @task
+    def write_bronze_to_silver(bronze_result):
+        return write_stock_price_bronze_to_silver(bronze_result)
+
+    # silver parquet를 읽어 DuckDB mart 테이블과 serving view에 적재한다.
+    @task
+    def write_silver_to_mart(silver_result):
+        return write_stock_price_silver_to_mart(silver_result)
+
     # task 객체를 먼저 만들고, 아래에서 실행 순서를 명시적으로 연결한다.
     check_market_window_task = check_market_window()
     collect_raw_task = collect_raw()
     write_raw_to_bronze_task = write_raw_to_bronze(collect_raw_task)
+    write_bronze_to_silver_task = write_bronze_to_silver(write_raw_to_bronze_task)
+    write_silver_to_mart_task = write_silver_to_mart(write_bronze_to_silver_task)
 
     # 실행 순서:
     # 1. 장중 여부 확인
     # 2. raw 데이터 수집
     # 3. bronze 저장
-    check_market_window_task >> collect_raw_task >> write_raw_to_bronze_task
+    # 4. silver 변환
+    # 5. DuckDB mart 적재
+    (
+        check_market_window_task
+        >> collect_raw_task
+        >> write_raw_to_bronze_task
+        >> write_bronze_to_silver_task
+        >> write_silver_to_mart_task
+    )
 
 
 collect_kis_stock_price_raw()
