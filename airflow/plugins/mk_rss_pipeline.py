@@ -57,6 +57,26 @@ def write_mk_rss_bronze_to_silver(bronze_result):
     return {"collection_id": raw_payload["collection_id"], "source_feed": raw_payload["source_feed"], "article_count": len(silver_paths), "silver_paths": silver_paths}
 
 
+# silver 저장 결과 dict를 읽어 RSS 기사들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
+def write_mk_rss_silver_to_mart(silver_result):
+    import duckdb
+
+    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
+    loaded_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    mart_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(mart_path)) as connection:
+        connection.execute("CREATE SCHEMA IF NOT EXISTS mart")
+        connection.execute("CREATE SCHEMA IF NOT EXISTS serving")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_stock (stock_id BIGINT, stock_code VARCHAR, stock_name VARCHAR, market_division_code VARCHAR, market_name VARCHAR, industry_name VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_event_source (event_source_id BIGINT, event_source_code VARCHAR, event_source_name VARCHAR, event_source_type VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.fact_market_event (event_id VARCHAR, event_source_id BIGINT, stock_id BIGINT, event_scope VARCHAR, event_at TIMESTAMP, event_date DATE, event_title VARCHAR, event_summary VARCHAR, event_url VARCHAR, source_record_id VARCHAR, is_main_event BOOLEAN, source VARCHAR, collection_id VARCHAR, collected_at TIMESTAMP, processed_at TIMESTAMP)")
+        connection.execute("INSERT INTO mart.dim_event_source SELECT COALESCE((SELECT MAX(event_source_id) FROM mart.dim_event_source), 0) + 1, 'mk_rss_news', 'MK RSS News', 'news', CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) WHERE NOT EXISTS (SELECT 1 FROM mart.dim_event_source WHERE event_source_code = 'mk_rss_news')", [loaded_at, loaded_at])
+        for silver_path in silver_result["silver_paths"]:
+            connection.execute("INSERT INTO mart.fact_market_event SELECT 'mk_rss:' || src.article_id, source_dim.event_source_id, NULL, 'market', CAST(src.published_at AS TIMESTAMP), CAST(src.published_date AS DATE), src.title, src.description, src.article_url, src.article_id, TRUE, src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src CROSS JOIN (SELECT event_source_id FROM mart.dim_event_source WHERE event_source_code = 'mk_rss_news') AS source_dim WHERE NOT EXISTS (SELECT 1 FROM mart.fact_market_event AS fact WHERE fact.event_id = 'mk_rss:' || src.article_id AND fact.event_scope = 'market')", [loaded_at, silver_path])
+        connection.execute("CREATE OR REPLACE VIEW serving.v_stock_event_timeline AS SELECT stock.stock_code, stock.stock_name, source_dim.event_source_code, source_dim.event_source_name, source_dim.event_source_type, event.event_id, event.event_scope, event.event_at, event.event_date, event.event_title, event.event_summary, event.event_url, event.source_record_id, event.is_main_event, event.source, event.collection_id, event.collected_at, event.processed_at FROM mart.fact_market_event AS event INNER JOIN mart.dim_event_source AS source_dim ON event.event_source_id = source_dim.event_source_id LEFT JOIN mart.dim_stock AS stock ON event.stock_id = stock.stock_id")
+    return {"collection_id": silver_result["collection_id"], "source_feed": silver_result["source_feed"], "article_count": silver_result["article_count"], "mart_path": str(mart_path)}
+
+
 # 수집 시각 기준으로 bronze 저장 경로에 사용할 collection_id를 만든다.
 def _build_collection_id(collected_at):
     return f"{collected_at.format('YYYYMMDDTHHmmss')}_{uuid.uuid4().hex[:8]}"
