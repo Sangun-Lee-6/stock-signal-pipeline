@@ -79,6 +79,89 @@ def write_opendart_raw_to_bronze(raw_payload):
     return _build_write_result(raw_payload, bronze_path)
 
 
+# bronze 저장 결과 dict를 읽어 OpenDART 공시 1건 단위 silver parquet들로 저장하고 저장 결과를 반환한다.
+def write_opendart_bronze_to_silver(bronze_result):
+    import pandas as pd
+
+    bronze_path = Path(bronze_result["bronze_path"])
+    raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+    response_body = raw_payload["response"]["body"]
+    collected_at = raw_payload["collected_at"]
+    processed_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    silver_paths = []
+    for disclosure in response_body.get("list", []):
+        disclosure_id = str(disclosure.get("rcept_no") or "").strip()
+        if not disclosure_id:
+            continue
+        event_date = str(disclosure.get("rcept_dt") or "").strip()
+        event_at = (
+            pendulum.from_format(event_date, "YYYYMMDD", tz="Asia/Seoul")
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .to_iso8601_string()
+            if event_date
+            else None
+        )
+        silver_path = (
+            LOCAL_S3_ROOT
+            / "silver"
+            / "silver_disclosure_event"
+            / f"event_date={pendulum.from_format(event_date, 'YYYYMMDD', tz='Asia/Seoul').format('YYYY-MM-DD')}"
+            / f"disclosure_id={disclosure_id}"
+            / "data.parquet"
+        )
+        silver_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            [
+                {
+                    "source": raw_payload["source"],
+                    "collection_id": raw_payload["collection_id"],
+                    "disclosure_id": disclosure_id,
+                    "corp_code": disclosure.get("corp_code"),
+                    "corp_name": disclosure.get("corp_name"),
+                    "stock_code": disclosure.get("stock_code") or None,
+                    "corp_cls": disclosure.get("corp_cls") or None,
+                    "report_name": disclosure.get("report_nm"),
+                    "filer_name": disclosure.get("flr_nm") or None,
+                    "remark": disclosure.get("rm") or None,
+                    "event_date": pendulum.from_format(event_date, "YYYYMMDD", tz="Asia/Seoul").format("YYYY-MM-DD"),
+                    "event_at": event_at,
+                    "collected_at": collected_at,
+                    "processed_at": processed_at,
+                }
+            ]
+        ).to_parquet(silver_path, index=False)
+        silver_paths.append(str(silver_path))
+    return {
+        "collection_id": raw_payload["collection_id"],
+        "bgn_de": raw_payload["request"]["params"]["bgn_de"],
+        "end_de": raw_payload["request"]["params"]["end_de"],
+        "page_no": raw_payload["request"]["params"]["page_no"],
+        "disclosure_count": len(silver_paths),
+        "silver_paths": silver_paths,
+    }
+
+
+# silver 저장 결과 dict를 읽어 OpenDART 공시들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
+def write_opendart_silver_to_mart(silver_result):
+    import duckdb
+
+    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
+    loaded_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    mart_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(mart_path)) as connection:
+        connection.execute("CREATE SCHEMA IF NOT EXISTS mart")
+        connection.execute("CREATE SCHEMA IF NOT EXISTS serving")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_stock (stock_id BIGINT, stock_code VARCHAR, stock_name VARCHAR, market_division_code VARCHAR, market_name VARCHAR, industry_name VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_event_source (event_source_id BIGINT, event_source_code VARCHAR, event_source_name VARCHAR, event_source_type VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.fact_market_event (event_id VARCHAR, event_source_id BIGINT, stock_id BIGINT, event_scope VARCHAR, event_at TIMESTAMP, event_date DATE, event_title VARCHAR, event_summary VARCHAR, event_url VARCHAR, source_record_id VARCHAR, is_main_event BOOLEAN, source VARCHAR, collection_id VARCHAR, collected_at TIMESTAMP, processed_at TIMESTAMP)")
+        connection.execute("INSERT INTO mart.dim_event_source SELECT COALESCE((SELECT MAX(event_source_id) FROM mart.dim_event_source), 0) + 1, 'opendart_disclosure', 'OpenDART Disclosure', 'disclosure', CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) WHERE NOT EXISTS (SELECT 1 FROM mart.dim_event_source WHERE event_source_code = 'opendart_disclosure')", [loaded_at, loaded_at])
+        for silver_path in silver_result["silver_paths"]:
+            connection.execute("INSERT INTO mart.dim_stock SELECT COALESCE((SELECT MAX(stock_id) FROM mart.dim_stock), 0) + ROW_NUMBER() OVER (ORDER BY src.stock_code), src.stock_code, COALESCE(src.corp_name, src.stock_code), NULL, NULL, NULL, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src WHERE src.stock_code IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mart.dim_stock AS dim WHERE dim.stock_code = src.stock_code)", [loaded_at, loaded_at, silver_path])
+            connection.execute("INSERT INTO mart.fact_market_event SELECT 'opendart:' || src.disclosure_id, source_dim.event_source_id, stock.stock_id, CASE WHEN stock.stock_id IS NOT NULL THEN 'stock' ELSE 'unmatched' END, CAST(src.event_at AS TIMESTAMP), CAST(src.event_date AS DATE), src.report_name, src.remark, NULL, src.disclosure_id, TRUE, src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src CROSS JOIN (SELECT event_source_id FROM mart.dim_event_source WHERE event_source_code = 'opendart_disclosure') AS source_dim LEFT JOIN mart.dim_stock AS stock ON src.stock_code = stock.stock_code WHERE NOT EXISTS (SELECT 1 FROM mart.fact_market_event AS fact WHERE fact.event_id = 'opendart:' || src.disclosure_id AND COALESCE(fact.stock_id, -1) = COALESCE(stock.stock_id, -1) AND fact.event_scope = CASE WHEN stock.stock_id IS NOT NULL THEN 'stock' ELSE 'unmatched' END)", [loaded_at, silver_path])
+        connection.execute("CREATE OR REPLACE VIEW serving.v_stock_event_timeline AS SELECT stock.stock_code, stock.stock_name, source_dim.event_source_code, source_dim.event_source_name, source_dim.event_source_type, event.event_id, event.event_scope, event.event_at, event.event_date, event.event_title, event.event_summary, event.event_url, event.source_record_id, event.is_main_event, event.source, event.collection_id, event.collected_at, event.processed_at FROM mart.fact_market_event AS event INNER JOIN mart.dim_event_source AS source_dim ON event.event_source_id = source_dim.event_source_id LEFT JOIN mart.dim_stock AS stock ON event.stock_id = stock.stock_id")
+    return {"collection_id": silver_result["collection_id"], "bgn_de": silver_result["bgn_de"], "end_de": silver_result["end_de"], "page_no": silver_result["page_no"], "disclosure_count": silver_result["disclosure_count"], "mart_path": str(mart_path)}
+
+
 # 여러 후보 환경변수 중 첫 번째 유효한 값을 읽고, 없으면 지정한 에러를 발생시킨다.
 def _read_required_env(error_message, *env_names):
     for env_name in env_names:
