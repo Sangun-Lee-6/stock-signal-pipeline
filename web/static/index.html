@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stock Signal</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="panel rail">
+        <div class="brand">Stock Signal</div>
+        <div class="stock-list" id="stock-list"></div>
+      </aside>
+
+      <main class="main">
+        <section class="panel hero">
+          <div>
+            <p class="eyebrow">Market Signal Draft</p>
+            <h1 class="title" id="stock-title">로딩 중</h1>
+            <p class="subtitle">
+              토스증권 계열의 다크 톤과 밀도 높은 카드 구성을 참고한 초안입니다.
+              실제 뉴스/공시 연결 전까지 우측 이벤트는 UI 목업으로 노출합니다.
+            </p>
+          </div>
+          <div class="hero-stat">
+            <div class="stat-label">최근 종가</div>
+            <div class="stat-value" id="stat-price">-</div>
+          </div>
+        </section>
+
+        <section class="panel chart-card">
+          <h2 class="section-title">Stock Price</h2>
+          <div class="chart-wrap">
+            <svg class="chart-svg" id="chart" viewBox="0 0 920 520" preserveAspectRatio="none"></svg>
+            <div class="chart-empty" id="chart-empty">표시할 가격 데이터가 없습니다.</div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="panel events">
+        <h2 class="section-title">주요 뉴스/공시</h2>
+        <p class="event-note">
+          현재는 이벤트 API가 없어 선택한 가격 구간을 기준으로 샘플 이벤트를 렌더링합니다.
+        </p>
+        <div class="event-list" id="event-list"></div>
+      </aside>
+    </div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
