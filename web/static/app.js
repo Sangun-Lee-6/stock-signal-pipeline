@@ -74,12 +74,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     rows.sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
     const width = 920;
     const height = 520;
-    const leftPad = 54;
-    const rightPad = 32;
-    const topPad = 24;
-    const bottomPad = 64;
+    const leftPad = 96;
+    const rightPad = 34;
+    const topPad = 34;
+    const bottomPad = 82;
     const plotWidth = width - leftPad - rightPad;
     const plotHeight = height - topPad - bottomPad;
+    const baselineY = height - bottomPad;
     let minValue = rows[0].closePrice;
     let maxValue = rows[0].closePrice;
 
@@ -89,59 +90,93 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     const valueGap = Math.max(maxValue - minValue, 1);
+    const valuePadding = Math.max(valueGap * 0.18, maxValue * 0.03, 1);
+    const domainMin = Math.max(minValue - valuePadding, 0);
+    const domainMax = maxValue + valuePadding;
+    const domainGap = Math.max(domainMax - domainMin, 1);
     const points = [];
-    let pathData = "";
+    let linePath = "";
 
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
       const x = leftPad + (plotWidth * index) / Math.max(rows.length - 1, 1);
-      const y = topPad + ((maxValue - row.closePrice) * plotHeight) / valueGap;
+      const y = topPad + ((domainMax - row.closePrice) * plotHeight) / domainGap;
       points.push({ ...row, x, y });
-      pathData += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
+      linePath += index === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`;
     }
 
-    const markerIndexes = [];
-    if (points.length > 2) markerIndexes.push(1);
-    if (points.length > 4) markerIndexes.push(Math.floor(points.length / 2));
-    if (points.length > 3) markerIndexes.push(points.length - 2);
+    const areaPath = `${linePath} L ${points[points.length - 1].x} ${baselineY} L ${points[0].x} ${baselineY} Z`;
+    const firstPoint = points[0];
+    const latestPoint = points[points.length - 1];
+    const changeValue = latestPoint.closePrice - firstPoint.closePrice;
+    const trendColor = changeValue >= 0 ? "#ff8a8a" : "#7fb2ff";
+    const trendFill = changeValue >= 0 ? "rgba(255,138,138,0.14)" : "rgba(127,178,255,0.16)";
+    let maxIndex = 0;
+    let minIndex = 0;
+
+    for (let index = 1; index < points.length; index += 1) {
+      if (points[index].closePrice > points[maxIndex].closePrice) {
+        maxIndex = index;
+      }
+      if (points[index].closePrice < points[minIndex].closePrice) {
+        minIndex = index;
+      }
+    }
+
+    let gridSvg = "";
+    for (let step = 0; step <= 4; step += 1) {
+      const ratio = step / 4;
+      const y = topPad + plotHeight * ratio;
+      gridSvg += `<line x1="${leftPad}" y1="${y}" x2="${width - rightPad}" y2="${y}" stroke="rgba(255,255,255,${step === 4 ? "0.24" : "0.1"})" stroke-width="${step === 4 ? "1.6" : "1"}" />`;
+    }
 
     let markerSvg = "";
-    let labelSvg = "";
-    const uniqueMarkers = Array.from(new Set(markerIndexes));
+    const uniqueMarkers = Array.from(new Set([minIndex, maxIndex, points.length - 1])).sort((left, right) => left - right);
 
     for (const index of uniqueMarkers) {
       const point = points[index];
-      markerSvg += `<line x1="${point.x}" y1="${point.y + 10}" x2="${point.x}" y2="${height - bottomPad + 2}" stroke="rgba(255,255,255,0.36)" stroke-dasharray="4 8" />`;
-      markerSvg += `<circle cx="${point.x}" cy="${point.y}" r="8" fill="rgba(49,130,246,0.2)" stroke="#dce9ff" stroke-width="3" />`;
-    }
-
-    const labelIndexes = [0, Math.floor(points.length / 2), points.length - 1];
-    for (const index of Array.from(new Set(labelIndexes))) {
-      const point = points[index];
-      const label = point.tradeDate.slice(5).replace("-", "/");
-      labelSvg += `<text x="${point.x}" y="${height - 22}" fill="rgba(255,255,255,0.72)" font-size="18" text-anchor="middle">${label}</text>`;
+      const isLatest = index === points.length - 1;
+      markerSvg += `<line x1="${point.x}" y1="${point.y + 12}" x2="${point.x}" y2="${baselineY}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 8" />`;
+      markerSvg += `<circle cx="${point.x}" cy="${point.y}" r="${isLatest ? "9" : "7"}" fill="${isLatest ? trendFill : "rgba(49,130,246,0.2)"}" stroke="${isLatest ? trendColor : "#dce9ff"}" stroke-width="${isLatest ? "4" : "3"}" />`;
+      markerSvg += `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="${isLatest ? trendColor : "#ffffff"}" />`;
     }
 
     chart.innerHTML = `
-      <line x1="${leftPad}" y1="${height - bottomPad}" x2="${width - rightPad}" y2="${height - bottomPad}" stroke="rgba(255,255,255,0.44)" stroke-width="2" />
-      <line x1="${leftPad}" y1="${height - bottomPad}" x2="${leftPad}" y2="${topPad}" stroke="rgba(255,255,255,0.44)" stroke-width="2" />
-      <path d="${pathData}" fill="none" stroke="url(#price-gradient)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
-      ${markerSvg}
-      ${labelSvg}
       <defs>
+        <linearGradient id="chart-surface-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.035" />
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+        </linearGradient>
+        <linearGradient id="chart-area-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#7fb2ff" stop-opacity="0.28" />
+          <stop offset="100%" stop-color="#7fb2ff" stop-opacity="0.02" />
+        </linearGradient>
         <linearGradient id="price-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stop-color="#d9e6ff" />
+          <stop offset="0%" stop-color="#9cc4ff" />
           <stop offset="100%" stop-color="#ffffff" />
         </linearGradient>
+        <filter id="line-glow" x="-10%" y="-10%" width="120%" height="120%">
+          <feGaussianBlur stdDeviation="8" result="blurred" />
+          <feMerge>
+            <feMergeNode in="blurred" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
       </defs>
-      <text x="${leftPad - 8}" y="${topPad + 8}" fill="rgba(255,255,255,0.86)" font-size="18" text-anchor="end">price</text>
-      <text x="${width - rightPad}" y="${height - bottomPad + 40}" fill="rgba(255,255,255,0.86)" font-size="18" text-anchor="end">time</text>
+      <rect x="${leftPad}" y="${topPad}" width="${plotWidth}" height="${plotHeight}" rx="28" fill="url(#chart-surface-gradient)" stroke="rgba(255,255,255,0.04)" />
+      ${gridSvg}
+      <line x1="${leftPad}" y1="${baselineY}" x2="${width - rightPad}" y2="${baselineY}" stroke="rgba(255,255,255,0.28)" stroke-width="1.6" />
+      <path d="${areaPath}" fill="url(#chart-area-gradient)" />
+      <line x1="${latestPoint.x}" y1="${latestPoint.y}" x2="${width - rightPad}" y2="${latestPoint.y}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 8" />
+      ${markerSvg}
+      <path d="${linePath}" fill="none" stroke="rgba(140,185,255,0.28)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#line-glow)" />
+      <path d="${linePath}" fill="none" stroke="url(#price-gradient)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
     `;
 
     return uniqueMarkers.map((index, order) => ({
       title: `이벤트 ${order + 1}`,
       body: `${points[index].tradeDate} 가격 ${numberFormatter.format(points[index].closePrice)}원 구간`,
-      note: order === 0 ? "뉴스/공시 연결 전 샘플 포인트" : "가격 반응 확인용 포인트"
+      note: index === maxIndex ? "고점 확인 포인트" : index === minIndex ? "저점 확인 포인트" : "최근 가격 확인 포인트"
     }));
   };
 
@@ -168,14 +203,45 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     const selectedStock = groupedStocks[selectedKey];
-    const rows = selectedStock.rows.slice();
-    const latestRow = rows[rows.length - 1];
-    const fallbackEvents = drawChart(rows);
     const requestKey = selectedKey;
 
     stockTitle.textContent = selectedStock.stockName;
-    statPrice.textContent = latestRow ? `${numberFormatter.format(latestRow.closePrice)}원` : "-";
+    statPrice.textContent = "-";
     eventList.innerHTML = '<div class="event-placeholder">이벤트를 불러오는 중입니다.</div>';
+
+    let stockPricePayload = { stocks: [], items: [] };
+    try {
+      const response = await fetch(`/api/stock-prices?stock_code=${encodeURIComponent(selectedStock.stockCode)}`);
+      stockPricePayload = await response.json();
+    } catch (error) {
+      stockPricePayload = { stocks: [], items: [] };
+    }
+
+    if (requestKey !== selectedKey) {
+      return;
+    }
+
+    const stockItems = Array.isArray(stockPricePayload.items) ? stockPricePayload.items : [];
+    const rows = stockItems.length
+      ? stockItems.map((item) => ({
+          tradeDate: String(item.trade_date).slice(0, 10),
+          closePrice: Number(item.close_price || 0)
+        }))
+      : selectedStock.rows.slice();
+    const stockMeta = Array.isArray(stockPricePayload.stocks)
+      ? stockPricePayload.stocks.find((item) => item.stock_code === selectedStock.stockCode)
+      : null;
+    const fallbackEvents = drawChart(rows);
+    const latestRow = rows[rows.length - 1];
+    const latestClosePrice = stockMeta && stockMeta.last_close_price !== undefined && stockMeta.last_close_price !== null
+      ? Number(stockMeta.last_close_price)
+      : latestRow
+        ? latestRow.closePrice
+        : null;
+
+    statPrice.textContent = latestClosePrice !== null && !Number.isNaN(latestClosePrice)
+      ? `${numberFormatter.format(latestClosePrice)}원`
+      : "-";
 
     let events = [];
     try {

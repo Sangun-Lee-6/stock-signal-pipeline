@@ -192,6 +192,25 @@ def read_stock_prices(stock_code: str | None = None):
         item_query = f"""
             WITH price_rows AS (
                 {base_query}
+            ),
+            latest_price_rows AS (
+                SELECT
+                    stock_code,
+                    stock_name,
+                    trade_date,
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume,
+                    price_change_rate,
+                    source,
+                    collected_at,
+                    loaded_at
+                FROM price_rows
+                WHERE (? IS NULL OR stock_code = ?)
+                ORDER BY trade_date DESC, stock_code DESC
+                LIMIT 240
             )
             SELECT
                 stock_code,
@@ -208,10 +227,8 @@ def read_stock_prices(stock_code: str | None = None):
                 NULL AS silver_path,
                 collected_at,
                 loaded_at
-            FROM price_rows
-            WHERE (? IS NULL OR stock_code = ?)
+            FROM latest_price_rows
             ORDER BY trade_date ASC, stock_code ASC
-            LIMIT 240
         """
         item_cursor = connection.execute(item_query, [stock_code, stock_code])
         item_columns = [description[0] for description in item_cursor.description]

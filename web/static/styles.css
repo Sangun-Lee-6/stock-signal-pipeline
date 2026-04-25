@@ -29,10 +29,12 @@ body {
 
 .shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 360px;
-  gap: 20px;
+  grid-template-columns: 196px minmax(0, 1fr) 328px;
+  gap: 18px;
   min-height: 100vh;
-  padding: 24px;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 18px;
 }
 
 .panel {
@@ -44,7 +46,7 @@ body {
 }
 
 .rail {
-  padding: 22px 18px;
+  padding: 20px 16px;
 }
 
 .brand {
@@ -59,12 +61,12 @@ body {
 .stock-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .stock-button {
   width: 100%;
-  padding: 16px 18px;
+  padding: 15px 16px;
   border: 1px solid transparent;
   border-radius: 20px;
   background: transparent;
@@ -91,14 +93,14 @@ body {
 .main {
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 20px;
+  gap: 18px;
 }
 
 .hero {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  padding: 28px 32px;
+  padding: 24px 28px;
 }
 
 .eyebrow {
@@ -122,13 +124,16 @@ body {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.6;
+  max-width: 58ch;
 }
 
 .hero-stat {
-  min-width: 180px;
+  min-width: 168px;
   padding: 18px 20px;
   border-radius: 22px;
-  background: var(--panel-strong);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    var(--panel-strong);
   border: 1px solid var(--border);
 }
 
@@ -146,28 +151,58 @@ body {
 }
 
 .chart-card {
-  padding: 24px 24px 18px;
+  padding: 18px 18px 14px;
 }
 
 .section-title {
-  margin: 0 0 20px;
+  margin: 0 0 14px;
   font-size: 28px;
   font-weight: 800;
   letter-spacing: -0.04em;
 }
 
 .chart-wrap {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   height: 100%;
-  min-height: 520px;
+  min-height: clamp(560px, 64vh, 720px);
   border-radius: 24px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
+    radial-gradient(circle at top left, rgba(127, 178, 255, 0.2), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 28%),
     #0f131a;
   border: 1px solid var(--border);
-  padding: 18px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  padding: 10px;
+}
+
+.chart-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 82% 18%, rgba(255, 255, 255, 0.08), transparent 24%),
+    linear-gradient(180deg, transparent 0%, rgba(15, 19, 26, 0.1) 100%);
+  pointer-events: none;
+}
+
+.chart-wrap::after {
+  content: "";
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 18px;
+  height: 84px;
+  border-radius: 999px;
+  background: rgba(49, 130, 246, 0.12);
+  filter: blur(48px);
+  pointer-events: none;
 }
 
 .chart-svg {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   display: block;
@@ -175,6 +210,8 @@ body {
 
 .chart-empty {
   display: none;
+  position: relative;
+  z-index: 1;
   height: 100%;
   min-height: 420px;
   align-items: center;
@@ -184,11 +221,11 @@ body {
 }
 
 .events {
-  padding: 24px;
+  padding: 20px;
 }
 
 .event-note {
-  margin: 8px 0 18px;
+  margin: 8px 0 16px;
   color: var(--muted);
   font-size: 14px;
   line-height: 1.5;
@@ -197,13 +234,18 @@ body {
 .event-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .event-card {
   padding: 18px;
   border-radius: 22px;
-  background: var(--panel-strong);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    var(--panel-strong);
   border: 1px solid var(--border);
 }
 
@@ -235,11 +277,17 @@ body {
 
 @media (max-width: 1200px) {
   .shell {
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: 184px minmax(0, 1fr);
   }
 
   .events {
     grid-column: 1 / -1;
+  }
+
+  .event-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 }
 
@@ -247,18 +295,26 @@ body {
   .shell {
     grid-template-columns: 1fr;
     padding: 14px;
+    gap: 14px;
   }
 
   .hero {
     flex-direction: column;
     gap: 18px;
+    padding: 20px 22px;
   }
 
   .title {
     font-size: 34px;
   }
 
+  .chart-card,
+  .events {
+    padding: 16px;
+  }
+
   .chart-wrap {
-    min-height: 400px;
+    min-height: 380px;
+    padding: 8px;
   }
 }
