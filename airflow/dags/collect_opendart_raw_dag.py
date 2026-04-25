@@ -27,9 +27,9 @@ def collect_opendart_raw():
     # 이 task는 전체 페이지 수와 공통 메타데이터만 반환한다.
     @task
     def collect_page_manifest():
-        logical_date = get_current_context()["logical_date"].in_timezone("Asia/Seoul")
-        target_date = logical_date.format("YYYYMMDD")
-        return opendart_pipeline.collect_opendart_page_manifest({"bgn_de": target_date, "end_de": target_date})
+        from airflow.exceptions import AirflowSkipException
+
+        raise AirflowSkipException("OpenDART 수집은 현재 비활성화되어 있습니다.")
 
     # manifest를 바탕으로 page별 수집 요청 목록을 만든다.
     @task
@@ -64,11 +64,19 @@ def collect_opendart_raw():
     # page별 bronze 저장 결과를 읽어 공시 1건 단위 silver parquet로 변환한다.
     @task
     def write_bronze_to_silver(bronze_result):
+        import importlib
+        import opendart_pipeline
+
+        opendart_pipeline = importlib.reload(opendart_pipeline)
         return opendart_pipeline.write_opendart_bronze_to_silver(bronze_result)
 
     # silver parquet 공시들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
     @task
     def write_silver_to_mart(silver_result):
+        import importlib
+        import opendart_pipeline
+
+        opendart_pipeline = importlib.reload(opendart_pipeline)
         return opendart_pipeline.write_opendart_silver_to_mart(silver_result)
 
     # 실행 순서:
