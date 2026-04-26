@@ -60,6 +60,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const stockKeys = Object.keys(groupedStocks);
   let selectedKey = stockKeys[0] || null;
+  let selectedRange = payload.selected_range || "1m";
 
   const drawChart = (rows) => {
     if (!rows.length) {
@@ -141,37 +142,87 @@ document.addEventListener("DOMContentLoaded", async () => {
       markerSvg += `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="${isLatest ? trendColor : "#ffffff"}" />`;
     }
 
-    chart.innerHTML = `
-      <defs>
-        <linearGradient id="chart-surface-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.035" />
-          <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
-        </linearGradient>
-        <linearGradient id="chart-area-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#7fb2ff" stop-opacity="0.28" />
-          <stop offset="100%" stop-color="#7fb2ff" stop-opacity="0.02" />
-        </linearGradient>
-        <linearGradient id="price-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stop-color="#9cc4ff" />
-          <stop offset="100%" stop-color="#ffffff" />
-        </linearGradient>
-        <filter id="line-glow" x="-10%" y="-10%" width="120%" height="120%">
-          <feGaussianBlur stdDeviation="8" result="blurred" />
-          <feMerge>
-            <feMergeNode in="blurred" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-      </defs>
-      <rect x="${leftPad}" y="${topPad}" width="${plotWidth}" height="${plotHeight}" rx="28" fill="url(#chart-surface-gradient)" stroke="rgba(255,255,255,0.04)" />
-      ${gridSvg}
-      <line x1="${leftPad}" y1="${baselineY}" x2="${width - rightPad}" y2="${baselineY}" stroke="rgba(255,255,255,0.28)" stroke-width="1.6" />
-      <path d="${areaPath}" fill="url(#chart-area-gradient)" />
-      <line x1="${latestPoint.x}" y1="${latestPoint.y}" x2="${width - rightPad}" y2="${latestPoint.y}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 8" />
-      ${markerSvg}
-      <path d="${linePath}" fill="none" stroke="rgba(140,185,255,0.28)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#line-glow)" />
-      <path d="${linePath}" fill="none" stroke="url(#price-gradient)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
-    `;
+    let selectedPointIndex = points.length - 1;
+    const highlightColor = "#ffd166";
+    const renderSelection = () => {
+      const selectedPoint = points[selectedPointIndex];
+      const labelWidth = 176;
+      const labelHeight = 56;
+      const labelX = Math.min(
+        Math.max(selectedPoint.x - labelWidth / 2, leftPad + 14),
+        width - rightPad - labelWidth - 14
+      );
+      const labelY = Math.max(topPad + 16, selectedPoint.y - 84);
+      const selectablePointSvg = points.map((point, index) => `
+        <circle
+          data-point-index="${index}"
+          cx="${point.x}"
+          cy="${point.y}"
+          r="14"
+          fill="transparent"
+          tabindex="0"
+          role="button"
+          aria-label="${point.tradeDate} 종가 ${numberFormatter.format(point.closePrice)}원"
+          style="cursor:pointer"
+        />
+      `).join("");
+
+      statPrice.textContent = `${numberFormatter.format(selectedPoint.closePrice)}원`;
+      chart.innerHTML = `
+        <defs>
+          <linearGradient id="chart-surface-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff" stop-opacity="0.035" />
+            <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+          </linearGradient>
+          <linearGradient id="chart-area-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#7fb2ff" stop-opacity="0.28" />
+            <stop offset="100%" stop-color="#7fb2ff" stop-opacity="0.02" />
+          </linearGradient>
+          <linearGradient id="price-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#9cc4ff" />
+            <stop offset="100%" stop-color="#ffffff" />
+          </linearGradient>
+          <filter id="line-glow" x="-10%" y="-10%" width="120%" height="120%">
+            <feGaussianBlur stdDeviation="8" result="blurred" />
+            <feMerge>
+              <feMergeNode in="blurred" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <rect x="${leftPad}" y="${topPad}" width="${plotWidth}" height="${plotHeight}" rx="28" fill="url(#chart-surface-gradient)" stroke="rgba(255,255,255,0.04)" />
+        ${gridSvg}
+        <line x1="${leftPad}" y1="${baselineY}" x2="${width - rightPad}" y2="${baselineY}" stroke="rgba(255,255,255,0.28)" stroke-width="1.6" />
+        <path d="${areaPath}" fill="url(#chart-area-gradient)" />
+        <line x1="${selectedPoint.x}" y1="${selectedPoint.y}" x2="${width - rightPad}" y2="${selectedPoint.y}" stroke="rgba(255,255,255,0.22)" stroke-dasharray="4 8" />
+        <line x1="${selectedPoint.x}" y1="${selectedPoint.y + 14}" x2="${selectedPoint.x}" y2="${baselineY}" stroke="rgba(255,209,102,0.34)" stroke-dasharray="4 8" />
+        ${markerSvg}
+        <path d="${linePath}" fill="none" stroke="rgba(140,185,255,0.28)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" filter="url(#line-glow)" />
+        <path d="${linePath}" fill="none" stroke="url(#price-gradient)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+        <circle cx="${selectedPoint.x}" cy="${selectedPoint.y}" r="15" fill="rgba(255,209,102,0.16)" stroke="${highlightColor}" stroke-width="2" />
+        <circle cx="${selectedPoint.x}" cy="${selectedPoint.y}" r="6" fill="${highlightColor}" />
+        <rect x="${labelX}" y="${labelY}" width="${labelWidth}" height="${labelHeight}" rx="16" fill="rgba(11,13,18,0.92)" stroke="rgba(255,209,102,0.36)" />
+        <text x="${labelX + 16}" y="${labelY + 22}" fill="rgba(255,255,255,0.72)" font-size="12" font-weight="700">${selectedPoint.tradeDate}</text>
+        <text x="${labelX + 16}" y="${labelY + 42}" fill="#f4f6fb" font-size="18" font-weight="800">${numberFormatter.format(selectedPoint.closePrice)}원</text>
+        ${selectablePointSvg}
+      `;
+
+      for (const pointElement of chart.querySelectorAll("[data-point-index]")) {
+        pointElement.addEventListener("click", () => {
+          selectedPointIndex = Number(pointElement.getAttribute("data-point-index"));
+          renderSelection();
+        });
+        pointElement.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectedPointIndex = Number(pointElement.getAttribute("data-point-index"));
+            renderSelection();
+          }
+        });
+      }
+    };
+
+    renderSelection();
 
     return uniqueMarkers.map((index, order) => ({
       title: `이벤트 ${order + 1}`,
@@ -190,6 +241,52 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    const chartCard = chart.closest(".chart-card");
+    const chartWrap = chart.parentElement;
+    let rangeControls = chartCard.querySelector('[data-role="price-range-controls"]');
+    const rangeOptions = [
+      { value: "1d", label: "최근 1일" },
+      { value: "5d", label: "최근 5일" },
+      { value: "1m", label: "최근 1개월" },
+      { value: "6m", label: "최근 6개월" }
+    ];
+
+    if (!rangeControls) {
+      rangeControls = document.createElement("div");
+      rangeControls.dataset.role = "price-range-controls";
+      rangeControls.style.display = "flex";
+      rangeControls.style.flexWrap = "wrap";
+      rangeControls.style.gap = "8px";
+      rangeControls.style.margin = "0 0 16px";
+      chartCard.insertBefore(rangeControls, chartWrap);
+    }
+
+    rangeControls.innerHTML = "";
+    for (const option of rangeOptions) {
+      const button = document.createElement("button");
+      const isActive = option.value === selectedRange;
+      button.type = "button";
+      button.textContent = option.label;
+      button.style.border = isActive ? "1px solid rgba(49, 130, 246, 0.45)" : "1px solid rgba(255, 255, 255, 0.08)";
+      button.style.background = isActive ? "linear-gradient(180deg, rgba(49, 130, 246, 0.22), rgba(49, 130, 246, 0.08))" : "rgba(255, 255, 255, 0.03)";
+      button.style.color = "#f4f6fb";
+      button.style.padding = "10px 14px";
+      button.style.borderRadius = "999px";
+      button.style.font = "inherit";
+      button.style.fontSize = "13px";
+      button.style.fontWeight = "700";
+      button.style.cursor = "pointer";
+      button.style.transition = "160ms ease";
+      button.onclick = () => {
+        if (selectedRange === option.value) {
+          return;
+        }
+        selectedRange = option.value;
+        render();
+      };
+      rangeControls.appendChild(button);
+    }
+
     stockList.innerHTML = "";
     for (const stockKey of stockKeys) {
       const button = document.createElement("button");
@@ -203,7 +300,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     const selectedStock = groupedStocks[selectedKey];
-    const requestKey = selectedKey;
+    const requestKey = `${selectedKey}:${selectedRange}`;
 
     stockTitle.textContent = selectedStock.stockName;
     statPrice.textContent = "-";
@@ -211,23 +308,28 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     let stockPricePayload = { stocks: [], items: [] };
     try {
-      const response = await fetch(`/api/stock-prices?stock_code=${encodeURIComponent(selectedStock.stockCode)}`);
+      const response = await fetch(`/api/stock-prices?stock_code=${encodeURIComponent(selectedStock.stockCode)}&range=${encodeURIComponent(selectedRange)}`);
       stockPricePayload = await response.json();
     } catch (error) {
       stockPricePayload = { stocks: [], items: [] };
     }
 
-    if (requestKey !== selectedKey) {
+    if (requestKey !== `${selectedKey}:${selectedRange}`) {
       return;
     }
 
     const stockItems = Array.isArray(stockPricePayload.items) ? stockPricePayload.items : [];
+    const fallbackRows = selectedRange === "1d"
+      ? selectedStock.rows.slice(-1)
+      : selectedRange === "5d"
+        ? selectedStock.rows.slice(-5)
+        : selectedStock.rows.slice();
     const rows = stockItems.length
       ? stockItems.map((item) => ({
           tradeDate: String(item.trade_date).slice(0, 10),
           closePrice: Number(item.close_price || 0)
         }))
-      : selectedStock.rows.slice();
+      : fallbackRows;
     const stockMeta = Array.isArray(stockPricePayload.stocks)
       ? stockPricePayload.stocks.find((item) => item.stock_code === selectedStock.stockCode)
       : null;
@@ -252,7 +354,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       events = [];
     }
 
-    if (requestKey !== selectedKey) {
+    if (requestKey !== `${selectedKey}:${selectedRange}`) {
       return;
     }
 

@@ -14,7 +14,11 @@ KIS_ACCESS_TOKEN_ENDPOINT = "/oauth2/tokenP"
 KIS_DOMESTIC_STOCK_PRICE_ENDPOINT = (
     "/uapi/domestic-stock/v1/quotations/inquire-price"
 )
+KIS_DOMESTIC_STOCK_DAILY_PRICE_ENDPOINT = (
+    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+)
 KIS_CURRENT_PRICE_TR_ID = "FHKST01010100"
+KIS_DAILY_PRICE_TR_ID = "FHKST03010100"
 KIS_USER_AGENT = "stock-signal-pipeline/kis-stock-price-raw-ingestion"
 TARGET_STOCK_CODE = "108320"
 TARGET_STOCK_NAME = "LX세미콘"
@@ -53,6 +57,25 @@ def collect_stock_price_raw():
     )
 
 
+# 설정된 대상 종목의 일봉 이력을 조회하고 bronze 저장용 raw payload를 반환한다.
+def collect_stock_price_daily_history_raw(start_date, end_date, org_adj_prc="0"):
+    if not start_date or not end_date:
+        raise ValueError("start_date 와 end_date 는 YYYYMMDD 형식으로 필요합니다.")
+    app_key = _read_required_env("KIS_OPEN_API_APP_KEY 환경변수가 비어 있습니다.", "KIS_OPEN_API_APP_KEY")
+    app_secret = _read_required_env("KIS_OPEN_API_APP_SECRET 환경변수가 비어 있습니다.", "KIS_OPEN_API_APP_SECRET")
+    base_url = _read_base_url()
+    token_request = _build_token_request(base_url, app_key, app_secret)
+    access_token, token_response = _get_access_token(token_request)
+    params = {"FID_COND_MRKT_DIV_CODE": TARGET_STOCK_MARKET_DIVISION_CODE, "FID_INPUT_ISCD": TARGET_STOCK_CODE, "FID_INPUT_DATE_1": start_date, "FID_INPUT_DATE_2": end_date, "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": org_adj_prc}
+    history_request = {"url": f"{base_url}{KIS_DOMESTIC_STOCK_DAILY_PRICE_ENDPOINT}?{parse.urlencode(params)}", "headers": {**_build_json_headers(), "Authorization": f"Bearer {access_token}", "appkey": app_key, "appsecret": app_secret, "tr_id": KIS_DAILY_PRICE_TR_ID, "custtype": "P"}, "params": params}
+    history_response = _request_json("GET", history_request, "KIS 국내주식기간별시세 조회 실패")
+    history_body = history_response["body"]
+    if str(history_body.get("rt_cd")) != "0":
+        raise RuntimeError("KIS 국내주식기간별시세 조회 실패: " f"rt_cd={history_body.get('rt_cd')}, " f"msg_cd={history_body.get('msg_cd')}, " f"msg1={history_body.get('msg1')}")
+    collected_at = pendulum.now("Asia/Seoul")
+    return {"source": "kis_open_api", "endpoint": history_request["url"].split('?', 1)[0], "collected_at": collected_at.to_iso8601_string(), "collection_id": _build_collection_id(collected_at), "stock": _build_stock_payload(), "authentication": _build_auth_payload(token_request, token_response), "request": {"headers": {**_build_json_headers(), "Authorization": "Bearer ***redacted***", "appkey": "***redacted***", "appsecret": "***redacted***", "tr_id": KIS_DAILY_PRICE_TR_ID, "custtype": "P"}, "params": params}, "response": history_response}
+
+
 # 수집한 raw payload를 bronze 경로에 저장하고 저장 결과만 반환한다.
 def write_stock_price_raw_to_bronze(raw_payload):
     bronze_path = _write_bronze_payload(raw_payload)
@@ -76,6 +99,25 @@ def write_stock_price_bronze_to_silver(bronze_result):
     return {"collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "price_at": raw_payload["collected_at"], "silver_path": str(silver_path)}
 
 
+# bronze 저장 결과 dict를 읽어 KIS 일봉 silver parquet를 저장하고 저장 결과를 반환한다.
+def write_stock_price_daily_history_bronze_to_silver(bronze_result):
+    import pandas as pd
+
+    bronze_path = Path(bronze_result["bronze_path"])
+    raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+    processed_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    request_date = str(raw_payload["request"]["params"]["FID_INPUT_DATE_1"])
+    price_date = pendulum.from_format(request_date, "YYYYMMDD").format("YYYY-MM-DD")
+    to_number = lambda value: None if value in (None, "") else pd.to_numeric([value], errors="coerce")[0]
+    silver_path = LOCAL_S3_ROOT / "silver" / "silver_stock_price_daily" / f"stock_code={raw_payload['stock']['stock_code']}" / f"price_date={price_date}" / f"collection_id={raw_payload['collection_id']}" / "data.parquet"
+    silver_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [{"source": raw_payload["source"], "collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "market_division_code": raw_payload["stock"]["market_division_code"], "price_date": pendulum.from_format(str(item["stck_bsop_date"]), "YYYYMMDD").format("YYYY-MM-DD"), "collected_at": raw_payload["collected_at"], "processed_at": processed_at, "open_price": to_number(item.get("stck_oprc")), "high_price": to_number(item.get("stck_hgpr")), "low_price": to_number(item.get("stck_lwpr")), "close_price": to_number(item.get("stck_clpr")), "volume_accumulated": to_number(item.get("acml_vol")), "trade_amount_accumulated": to_number(item.get("acml_tr_pbmn")), "change_rate": to_number(item.get("prdy_ctrt"))} for item in sorted(raw_payload["response"]["body"].get("output2", []), key=lambda value: value.get("stck_bsop_date", ""))]
+    if not rows:
+        rows = [{"source": raw_payload["source"], "collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "market_division_code": raw_payload["stock"]["market_division_code"], "price_date": price_date, "collected_at": raw_payload["collected_at"], "processed_at": processed_at, "open_price": None, "high_price": None, "low_price": None, "close_price": None, "volume_accumulated": None, "trade_amount_accumulated": None, "change_rate": None}]
+    pd.DataFrame(rows).to_parquet(silver_path, index=False)
+    return {"collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "price_date": price_date, "silver_path": str(silver_path)}
+
+
 # silver 저장 결과 dict를 읽어 KIS mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
 def write_stock_price_silver_to_mart(silver_result):
     try:
@@ -95,6 +137,27 @@ def write_stock_price_silver_to_mart(silver_result):
         connection.execute("INSERT INTO mart.fact_stock_price SELECT dim.stock_id, CAST(src.price_at AS TIMESTAMP), CAST(src.price_date AS DATE), CAST(src.current_price AS DECIMAL(18,2)), CAST(src.open_price AS DECIMAL(18,2)), CAST(src.high_price AS DECIMAL(18,2)), CAST(src.low_price AS DECIMAL(18,2)), CAST(src.change_rate AS DECIMAL(9,4)), CAST(src.volume_accumulated AS BIGINT), CAST(src.trade_amount_accumulated AS DECIMAL(18,2)), src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src INNER JOIN mart.dim_stock AS dim ON src.stock_code = dim.stock_code WHERE NOT EXISTS (SELECT 1 FROM mart.fact_stock_price AS fact WHERE fact.stock_id = dim.stock_id AND fact.price_at = CAST(src.price_at AS TIMESTAMP))", [loaded_at, str(silver_path)])
         connection.execute("CREATE OR REPLACE VIEW serving.v_stock_price_timeline AS SELECT stock.stock_code, stock.stock_name, price.price_at, price.price_date, price.current_price, price.open_price, price.high_price, price.low_price, price.change_rate, price.volume_accumulated, price.trade_amount_accumulated, price.source, price.collection_id, price.collected_at, price.processed_at FROM mart.fact_stock_price AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id")
     return {"collection_id": silver_result["collection_id"], "stock_code": silver_result["stock_code"], "stock_name": silver_result["stock_name"], "price_at": silver_result["price_at"], "mart_path": str(mart_path)}
+
+
+# silver 저장 결과 dict를 읽어 KIS 일봉 mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
+def write_stock_price_daily_history_silver_to_mart(silver_result):
+    try:
+        import duckdb
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Airflow 실행 환경에 duckdb 패키지가 없습니다.") from exc
+    silver_path = Path(silver_result["silver_path"])
+    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
+    loaded_at = pendulum.now("Asia/Seoul").to_iso8601_string()
+    mart_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(mart_path)) as connection:
+        connection.execute("CREATE SCHEMA IF NOT EXISTS mart")
+        connection.execute("CREATE SCHEMA IF NOT EXISTS serving")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_stock (stock_id BIGINT, stock_code VARCHAR, stock_name VARCHAR, market_division_code VARCHAR, market_name VARCHAR, industry_name VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+        connection.execute("CREATE TABLE IF NOT EXISTS mart.fact_stock_price_daily (stock_id BIGINT, price_date DATE, open_price DECIMAL(18,2), high_price DECIMAL(18,2), low_price DECIMAL(18,2), close_price DECIMAL(18,2), change_rate DECIMAL(9,4), volume_accumulated BIGINT, trade_amount_accumulated DECIMAL(18,2), source VARCHAR, collection_id VARCHAR, collected_at TIMESTAMP, processed_at TIMESTAMP)")
+        connection.execute("INSERT INTO mart.dim_stock SELECT COALESCE((SELECT MAX(stock_id) FROM mart.dim_stock), 0) + ROW_NUMBER() OVER (ORDER BY src.stock_code), src.stock_code, src.stock_name, src.market_division_code, NULL, NULL, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM (SELECT DISTINCT stock_code, stock_name, market_division_code FROM read_parquet(?)) AS src WHERE NOT EXISTS (SELECT 1 FROM mart.dim_stock AS dim WHERE dim.stock_code = src.stock_code)", [loaded_at, loaded_at, str(silver_path)])
+        connection.execute("INSERT INTO mart.fact_stock_price_daily SELECT dim.stock_id, CAST(src.price_date AS DATE), CAST(src.open_price AS DECIMAL(18,2)), CAST(src.high_price AS DECIMAL(18,2)), CAST(src.low_price AS DECIMAL(18,2)), CAST(src.close_price AS DECIMAL(18,2)), CAST(src.change_rate AS DECIMAL(9,4)), CAST(src.volume_accumulated AS BIGINT), CAST(src.trade_amount_accumulated AS DECIMAL(18,2)), src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src INNER JOIN mart.dim_stock AS dim ON src.stock_code = dim.stock_code WHERE src.close_price IS NOT NULL AND NOT EXISTS (SELECT 1 FROM mart.fact_stock_price_daily AS fact WHERE fact.stock_id = dim.stock_id AND fact.price_date = CAST(src.price_date AS DATE))", [loaded_at, str(silver_path)])
+        connection.execute("CREATE OR REPLACE VIEW serving.v_stock_price_daily AS SELECT stock.stock_code, stock.stock_name, price.price_date, price.open_price, price.high_price, price.low_price, price.close_price, price.change_rate, price.volume_accumulated, price.trade_amount_accumulated, price.source, price.collection_id, price.collected_at, price.processed_at FROM mart.fact_stock_price_daily AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id")
+    return {"collection_id": silver_result["collection_id"], "stock_code": silver_result["stock_code"], "stock_name": silver_result["stock_name"], "price_date": silver_result["price_date"], "mart_path": str(mart_path)}
 
 
 # 토큰 캐시를 포함해 현재 유효한 접근 토큰과 토큰 응답 메타데이터를 가져온다.

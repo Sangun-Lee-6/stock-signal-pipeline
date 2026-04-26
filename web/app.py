@@ -109,11 +109,12 @@ def read_index():
 
 
 @app.get("/api/stock-prices")
-def read_stock_prices(stock_code: str | None = None):
+def read_stock_prices(stock_code: str | None = None, range: str = "1m"):
     duckdb_path = Path(
         os.environ.get("WEB_DUCKDB_PATH", "/data/mart/stock_signal.duckdb")
     )
     read_only = os.environ.get("WEB_DUCKDB_READ_ONLY", "true").lower() == "true"
+    selected_range = range if range in {"1d", "5d", "1m", "6m"} else "1m"
 
     if not duckdb_path.exists():
         return JSONResponse(content={"stocks": [], "items": []})
@@ -129,7 +130,48 @@ def read_stock_prices(stock_code: str | None = None):
             ).fetchall()
         }
 
-        if ("serving", "v_stock_price_timeline") in objects:
+        if ("serving", "v_stock_price_daily") in objects:
+            base_query = """
+                SELECT
+                    stock_code,
+                    stock_name,
+                    price_date AS trade_date,
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume_accumulated AS volume,
+                    change_rate AS price_change_rate,
+                    source,
+                    collected_at,
+                    processed_at AS loaded_at
+                FROM serving.v_stock_price_daily
+            """
+            uses_daily_range = True
+        elif (
+            ("mart", "fact_stock_price_daily") in objects
+            and ("mart", "dim_stock") in objects
+        ):
+            base_query = """
+                SELECT
+                    stock.stock_code,
+                    stock.stock_name,
+                    price.price_date AS trade_date,
+                    price.open_price,
+                    price.high_price,
+                    price.low_price,
+                    price.close_price,
+                    price.volume_accumulated AS volume,
+                    price.change_rate AS price_change_rate,
+                    price.source,
+                    price.collected_at,
+                    price.processed_at AS loaded_at
+                FROM mart.fact_stock_price_daily AS price
+                INNER JOIN mart.dim_stock AS stock
+                    ON price.stock_id = stock.stock_id
+            """
+            uses_daily_range = True
+        elif ("serving", "v_stock_price_timeline") in objects:
             base_query = """
                 SELECT
                     stock_code,
@@ -146,6 +188,7 @@ def read_stock_prices(stock_code: str | None = None):
                     processed_at AS loaded_at
                 FROM serving.v_stock_price_timeline
             """
+            uses_daily_range = False
         elif (
             ("mart", "fact_stock_price") in objects
             and ("mart", "dim_stock") in objects
@@ -168,6 +211,7 @@ def read_stock_prices(stock_code: str | None = None):
                 INNER JOIN mart.dim_stock AS stock
                     ON price.stock_id = stock.stock_id
             """
+            uses_daily_range = False
         else:
             return JSONResponse(content={"stocks": [], "items": []})
 
@@ -189,11 +233,41 @@ def read_stock_prices(stock_code: str | None = None):
         stock_columns = [description[0] for description in stock_cursor.description]
         stock_rows = [dict(zip(stock_columns, row)) for row in stock_cursor.fetchall()]
 
-        item_query = f"""
-            WITH price_rows AS (
-                {base_query}
-            ),
-            latest_price_rows AS (
+        if uses_daily_range:
+            range_filter = {
+                "1d": "price_rank <= 1",
+                "5d": "price_rank <= 5",
+                "1m": "trade_date >= max_trade_date - INTERVAL 1 MONTH",
+                "6m": "trade_date >= max_trade_date - INTERVAL 6 MONTH",
+            }[selected_range]
+            item_query = f"""
+                WITH price_rows AS (
+                    {base_query}
+                ),
+                filtered_price_rows AS (
+                    SELECT
+                        stock_code,
+                        stock_name,
+                        trade_date,
+                        open_price,
+                        high_price,
+                        low_price,
+                        close_price,
+                        volume,
+                        price_change_rate,
+                        source,
+                        collected_at,
+                        loaded_at,
+                        MAX(trade_date) OVER (
+                            PARTITION BY stock_code
+                        ) AS max_trade_date,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY stock_code
+                            ORDER BY trade_date DESC
+                        ) AS price_rank
+                    FROM price_rows
+                    WHERE (? IS NULL OR stock_code = ?)
+                )
                 SELECT
                     stock_code,
                     stock_name,
@@ -205,32 +279,59 @@ def read_stock_prices(stock_code: str | None = None):
                     volume,
                     price_change_rate,
                     source,
+                    NULL AS bronze_path,
+                    NULL AS silver_path,
                     collected_at,
                     loaded_at
-                FROM price_rows
-                WHERE (? IS NULL OR stock_code = ?)
-                ORDER BY trade_date DESC, stock_code DESC
-                LIMIT 240
-            )
-            SELECT
-                stock_code,
-                stock_name,
-                trade_date,
-                open_price,
-                high_price,
-                low_price,
-                close_price,
-                volume,
-                price_change_rate,
-                source,
-                NULL AS bronze_path,
-                NULL AS silver_path,
-                collected_at,
-                loaded_at
-            FROM latest_price_rows
-            ORDER BY trade_date ASC, stock_code ASC
-        """
-        item_cursor = connection.execute(item_query, [stock_code, stock_code])
+                FROM filtered_price_rows
+                WHERE {range_filter}
+                ORDER BY trade_date ASC, stock_code ASC
+            """
+            item_cursor = connection.execute(item_query, [stock_code, stock_code])
+        else:
+            item_query = f"""
+                WITH price_rows AS (
+                    {base_query}
+                ),
+                latest_price_rows AS (
+                    SELECT
+                        stock_code,
+                        stock_name,
+                        trade_date,
+                        open_price,
+                        high_price,
+                        low_price,
+                        close_price,
+                        volume,
+                        price_change_rate,
+                        source,
+                        collected_at,
+                        loaded_at
+                    FROM price_rows
+                    WHERE (? IS NULL OR stock_code = ?)
+                    ORDER BY trade_date DESC, stock_code DESC
+                    LIMIT 240
+                )
+                SELECT
+                    stock_code,
+                    stock_name,
+                    trade_date,
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume,
+                    price_change_rate,
+                    source,
+                    NULL AS bronze_path,
+                    NULL AS silver_path,
+                    collected_at,
+                    loaded_at
+                FROM latest_price_rows
+                ORDER BY trade_date ASC, stock_code ASC
+            """
+            item_cursor = connection.execute(item_query, [stock_code, stock_code])
+
         item_columns = [description[0] for description in item_cursor.description]
         item_rows = [dict(zip(item_columns, row)) for row in item_cursor.fetchall()]
         return JSONResponse(
@@ -238,6 +339,7 @@ def read_stock_prices(stock_code: str | None = None):
                 "stocks": [serialize_row(row) for row in stock_rows],
                 "items": [serialize_row(row) for row in item_rows],
                 "selected_stock_code": stock_code,
+                "selected_range": selected_range,
             }
         )
 
@@ -276,10 +378,26 @@ def read_stock_events(stock_code: str | None = None):
                     event_title,
                     event_summary,
                     event_url,
+                    standardized_title,
+                    impact_scope,
+                    scope_evidence,
+                    driver_category,
+                    driver_evidence,
+                    impact_direction,
+                    direction_evidence,
+                    matched_entities,
                     source
                 FROM serving.v_stock_event_timeline
                 WHERE (? IS NULL OR stock_code = ? OR event_scope = 'market')
-                ORDER BY event_at DESC NULLS LAST, event_id DESC
+                ORDER BY
+                    CASE impact_scope
+                        WHEN '시장전체' THEN 1
+                        WHEN '섹터' THEN 2
+                        WHEN '기업' THEN 3
+                        ELSE 4
+                    END,
+                    event_at DESC NULLS LAST,
+                    event_id DESC
                 LIMIT 20
             """
         else:
