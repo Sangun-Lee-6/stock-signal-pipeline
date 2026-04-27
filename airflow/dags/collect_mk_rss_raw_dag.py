@@ -29,22 +29,22 @@ from mk_rss_pipeline import (
 def collect_mk_rss_raw():
     # MK RSS를 호출해서 raw payload를 만든다.
     # 이 task는 아직 파일을 쓰지 않고, 다음 task에 넘길 데이터만 반환한다.
-    @task
+    @task(execution_timeout=timedelta(minutes=3))
     def collect_raw():
         return collect_mk_rss_raw_payload()
 
     # Airflow는 task 반환값을 XCom으로 전달하므로, 여기서는 raw_payload 인자로 받는다.
-    @task
+    @task(execution_timeout=timedelta(minutes=3))
     def write_raw_to_bronze(raw_payload):
         return write_mk_rss_raw_to_bronze(raw_payload)
 
     # bronze 저장 결과를 읽어 RSS 기사 단위 silver parquet로 변환한다.
-    @task
+    @task(execution_timeout=timedelta(minutes=3))
     def write_bronze_to_silver(bronze_result):
         return write_mk_rss_bronze_to_silver(bronze_result)
 
     # silver parquet 기사들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
-    @task
+    @task(execution_timeout=timedelta(minutes=3))
     def write_silver_to_mart(silver_result):
         return write_mk_rss_silver_to_mart(silver_result)
 

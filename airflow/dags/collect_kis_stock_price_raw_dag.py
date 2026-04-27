@@ -41,22 +41,22 @@ def collect_kis_stock_price_raw():
 
     # KIS OpenAPI를 호출해서 raw payload를 만든다.
     # 이 task는 아직 파일을 쓰지 않고, 다음 task에 넘길 데이터만 반환한다.
-    @task
+    @task(execution_timeout=timedelta(seconds=50))
     def collect_raw():
         return collect_stock_price_raw()
 
     # Airflow는 task 반환값을 XCom으로 전달하므로, 여기서는 raw_payload 인자로 받는다.
-    @task
+    @task(execution_timeout=timedelta(seconds=50))
     def write_raw_to_bronze(raw_payload):
         return write_stock_price_raw_to_bronze(raw_payload)
 
     # bronze 저장 결과를 읽어 silver parquet로 변환한다.
-    @task
+    @task(execution_timeout=timedelta(seconds=50))
     def write_bronze_to_silver(bronze_result):
         return write_stock_price_bronze_to_silver(bronze_result)
 
     # silver parquet를 읽어 DuckDB mart 테이블과 serving view에 적재한다.
-    @task
+    @task(execution_timeout=timedelta(seconds=50))
     def write_silver_to_mart(silver_result):
         return write_stock_price_silver_to_mart(silver_result)
 
