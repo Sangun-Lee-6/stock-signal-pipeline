@@ -366,6 +366,35 @@ def read_stock_events(stock_code: str | None = None):
 
         if ("serving", "v_stock_event_timeline") in objects:
             query = """
+                WITH scoped_events AS (
+                    SELECT
+                        stock_code,
+                        stock_name,
+                        event_source_code,
+                        event_source_name,
+                        event_scope,
+                        event_id,
+                        event_at,
+                        event_date,
+                        event_title,
+                        event_summary,
+                        event_url,
+                        standardized_title,
+                        impact_scope,
+                        scope_evidence,
+                        driver_category,
+                        driver_evidence,
+                        impact_direction,
+                        direction_evidence,
+                        matched_entities,
+                        source,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY COALESCE(impact_scope, '미분류')
+                            ORDER BY event_at DESC NULLS LAST, event_id DESC
+                        ) AS scope_event_rank
+                    FROM serving.v_stock_event_timeline
+                    WHERE (? IS NULL OR stock_code = ? OR event_scope = 'market')
+                )
                 SELECT
                     stock_code,
                     stock_name,
@@ -387,8 +416,8 @@ def read_stock_events(stock_code: str | None = None):
                     direction_evidence,
                     matched_entities,
                     source
-                FROM serving.v_stock_event_timeline
-                WHERE (? IS NULL OR stock_code = ? OR event_scope = 'market')
+                FROM scoped_events
+                WHERE scope_event_rank <= 20
                 ORDER BY
                     CASE impact_scope
                         WHEN '시장전체' THEN 1
@@ -398,7 +427,6 @@ def read_stock_events(stock_code: str | None = None):
                     END,
                     event_at DESC NULLS LAST,
                     event_id DESC
-                LIMIT 20
             """
         else:
             return {"items": []}

@@ -61,6 +61,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const stockKeys = Object.keys(groupedStocks);
   let selectedKey = stockKeys[0] || null;
   let selectedRange = payload.selected_range || "1m";
+  let selectedEventScope = "시장전체";
 
   const drawChart = (rows) => {
     if (!rows.length) {
@@ -367,34 +368,192 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const renderedEvents = events.length
       ? events.map((event, index) => ({
-          kicker: `${event.event_source_name || event.source || "event"} · ${event.event_scope || "stock"}`,
-          title: event.event_title || "제목 없음",
-          meta: event.event_date || event.event_at || `이벤트 ${index + 1}`
+          scope: event.impact_scope || "미분류",
+          kicker: event.event_source_name || event.source || "event",
+          title: event.standardized_title || event.event_title || "제목 없음",
+          meta: event.event_date || event.event_at || `이벤트 ${index + 1}`,
+          direction: event.impact_direction,
+          driver: event.driver_category,
+          entities: event.matched_entities,
+          evidence: event.scope_evidence || event.driver_evidence || event.direction_evidence,
+          url: event.event_url
         }))
       : fallbackEvents.map((event) => ({
+          scope: "가격",
           kicker: event.title,
           title: event.body,
-          meta: event.note
+          meta: event.note,
+          direction: null,
+          driver: null,
+          entities: null,
+          evidence: null,
+          url: null
         }));
 
-    for (const event of renderedEvents) {
-      const card = document.createElement("article");
-      card.className = "event-card";
-      const kicker = document.createElement("div");
-      const title = document.createElement("div");
-      const meta = document.createElement("div");
+    const scopeOrder = ["시장전체", "섹터", "기업", "미분류", "가격"];
+    const scopeCopy = {
+      "시장전체": "금리, 환율, 정책처럼 시장 전반을 움직일 수 있는 기사",
+      "섹터": "특정 업종이나 테마에 집중된 기사",
+      "기업": "개별 기업 영향이 큰 기사",
+      "미분류": "분류 근거가 아직 충분하지 않은 기사",
+      "가격": "차트에서 자동 생성한 가격 확인 포인트"
+    };
+    const eventPanel = eventList.closest(".events");
+    let scopeControls = eventPanel.querySelector('[data-role="event-scope-controls"]');
 
-      kicker.className = "event-kicker";
-      title.className = "event-title";
-      meta.className = "event-meta";
-      kicker.textContent = event.kicker;
-      title.textContent = event.title;
-      meta.textContent = event.meta;
+    if (!scopeControls) {
+      scopeControls = document.createElement("div");
+      scopeControls.dataset.role = "event-scope-controls";
+      scopeControls.style.display = "grid";
+      scopeControls.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+      scopeControls.style.gap = "8px";
+      scopeControls.style.margin = "0 0 16px";
+      eventPanel.insertBefore(scopeControls, eventList);
+    }
 
-      card.appendChild(kicker);
-      card.appendChild(title);
-      card.appendChild(meta);
-      eventList.appendChild(card);
+    scopeControls.innerHTML = "";
+    for (const scope of scopeOrder.filter((value) => value !== "가격")) {
+      const count = renderedEvents.filter((event) => event.scope === scope).length;
+      const button = document.createElement("button");
+      const isActive = scope === selectedEventScope;
+
+      button.type = "button";
+      button.textContent = `${scope} ${count}`;
+      button.style.border = isActive ? "1px solid rgba(127, 178, 255, 0.45)" : "1px solid rgba(255, 255, 255, 0.08)";
+      button.style.background = isActive ? "linear-gradient(180deg, rgba(127, 178, 255, 0.2), rgba(127, 178, 255, 0.08))" : "rgba(255, 255, 255, 0.03)";
+      button.style.color = "#f4f6fb";
+      button.style.padding = "10px 12px";
+      button.style.borderRadius = "12px";
+      button.style.font = "inherit";
+      button.style.fontSize = "13px";
+      button.style.fontWeight = "800";
+      button.style.cursor = "pointer";
+      button.onclick = () => {
+        if (selectedEventScope === scope) {
+          return;
+        }
+        selectedEventScope = scope;
+        render();
+      };
+      scopeControls.appendChild(button);
+    }
+
+    for (const scope of scopeOrder) {
+      if (scope !== selectedEventScope && !(scope === "가격" && !events.length)) {
+        continue;
+      }
+
+      const scopedEvents = renderedEvents.filter((event) => event.scope === scope);
+
+      if (!scopedEvents.length) {
+        continue;
+      }
+
+      const section = document.createElement("section");
+      const heading = document.createElement("div");
+      const headingTitle = document.createElement("div");
+      const headingMeta = document.createElement("div");
+
+      section.style.display = "flex";
+      section.style.flexDirection = "column";
+      section.style.gap = "10px";
+      heading.style.display = "flex";
+      heading.style.justifyContent = "space-between";
+      heading.style.gap = "12px";
+      heading.style.alignItems = "baseline";
+      heading.style.margin = "10px 2px 2px";
+      headingTitle.className = "event-kicker";
+      headingTitle.textContent = `${scope} ${scopedEvents.length}`;
+      headingMeta.className = "event-meta";
+      headingMeta.style.fontSize = "12px";
+      headingMeta.style.textAlign = "right";
+      headingMeta.textContent = scopeCopy[scope];
+
+      heading.appendChild(headingTitle);
+      heading.appendChild(headingMeta);
+      section.appendChild(heading);
+
+      for (const event of scopedEvents) {
+        const card = document.createElement("article");
+        card.className = "event-card";
+        const topLine = document.createElement("div");
+        const badge = document.createElement("span");
+        const kicker = document.createElement("span");
+        const title = event.url ? document.createElement("a") : document.createElement("div");
+        const meta = document.createElement("div");
+        const chips = document.createElement("div");
+        const evidence = document.createElement("div");
+
+        topLine.style.display = "flex";
+        topLine.style.alignItems = "center";
+        topLine.style.gap = "8px";
+        topLine.style.flexWrap = "wrap";
+        badge.textContent = event.scope;
+        badge.style.padding = "4px 8px";
+        badge.style.border = "1px solid rgba(127, 178, 255, 0.24)";
+        badge.style.borderRadius = "999px";
+        badge.style.background = "rgba(127, 178, 255, 0.1)";
+        badge.style.color = "#dce9ff";
+        badge.style.fontSize = "11px";
+        badge.style.fontWeight = "800";
+        kicker.className = "event-kicker";
+        kicker.textContent = event.kicker;
+        title.className = "event-title";
+        title.textContent = event.title;
+        title.style.display = "block";
+        title.style.color = "#f4f6fb";
+        title.style.textDecoration = "none";
+        meta.className = "event-meta";
+        meta.textContent = event.meta;
+        chips.style.display = "flex";
+        chips.style.flexWrap = "wrap";
+        chips.style.gap = "6px";
+        chips.style.marginTop = "10px";
+
+        if (event.url) {
+          title.href = event.url;
+          title.target = "_blank";
+          title.rel = "noreferrer";
+        }
+
+        for (const chipText of [event.direction, event.driver, event.entities].filter(Boolean)) {
+          const chip = document.createElement("span");
+          chip.textContent = chipText;
+          chip.style.padding = "6px 8px";
+          chip.style.borderRadius = "8px";
+          chip.style.background = "rgba(255, 255, 255, 0.04)";
+          chip.style.color = "#c7d0dd";
+          chip.style.fontSize = "12px";
+          chip.style.fontWeight = "700";
+          chips.appendChild(chip);
+        }
+
+        topLine.appendChild(badge);
+        topLine.appendChild(kicker);
+        card.appendChild(topLine);
+        card.appendChild(title);
+        card.appendChild(meta);
+
+        if (chips.children.length) {
+          card.appendChild(chips);
+        }
+
+        if (event.evidence) {
+          evidence.className = "event-meta";
+          evidence.style.marginTop = "10px";
+          evidence.style.lineHeight = "1.5";
+          evidence.textContent = event.evidence;
+          card.appendChild(evidence);
+        }
+
+        section.appendChild(card);
+      }
+
+      eventList.appendChild(section);
+    }
+
+    if (!eventList.children.length) {
+      eventList.innerHTML = `<div class="event-placeholder">${selectedEventScope} 이벤트가 아직 없습니다.</div>`;
     }
   };
 
