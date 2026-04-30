@@ -7,7 +7,6 @@ from mk_rss_pipeline import (
     collect_mk_rss_raw as collect_mk_rss_raw_payload,
     write_mk_rss_bronze_to_silver,
     write_mk_rss_raw_to_bronze,
-    write_mk_rss_silver_to_mart,
 )
 
 
@@ -43,27 +42,19 @@ def collect_mk_rss_raw():
     def write_bronze_to_silver(bronze_result):
         return write_mk_rss_bronze_to_silver(bronze_result)
 
-    # silver parquet 기사들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
-    @task(execution_timeout=timedelta(minutes=3))
-    def write_silver_to_mart(silver_result):
-        return write_mk_rss_silver_to_mart(silver_result)
-
     # task 객체를 먼저 만들고, 아래에서 실행 순서를 명시적으로 연결한다.
     collect_raw_task = collect_raw()
     write_raw_to_bronze_task = write_raw_to_bronze(collect_raw_task)
     write_bronze_to_silver_task = write_bronze_to_silver(write_raw_to_bronze_task)
-    write_silver_to_mart_task = write_silver_to_mart(write_bronze_to_silver_task)
 
     # 실행 순서:
     # 1. raw 데이터 수집
     # 2. bronze 저장
     # 3. silver 변환
-    # 4. DuckDB mart 적재
     (
         collect_raw_task
         >> write_raw_to_bronze_task
         >> write_bronze_to_silver_task
-        >> write_silver_to_mart_task
     )
 
 
