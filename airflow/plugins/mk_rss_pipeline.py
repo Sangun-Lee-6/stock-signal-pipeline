@@ -161,6 +161,30 @@ def _write_bronze_payload(raw_payload):
     return bronze_path
 
 
+# MK RSS silver 생산 로그 manifest를 저장하고 저장 경로를 반환한다.
+def _write_silver_created_manifest(collection_id, created_at, silver_paths):
+    created_at_value = pendulum.parse(str(created_at))
+    manifest_path = (
+        LOCAL_S3_ROOT
+        / "silver"
+        / "_created_manifest"
+        / f"source={MK_SOURCE}"
+        / f"created_date={created_at_value.format('YYYY-MM-DD')}"
+        / f"collection_id={collection_id}"
+        / "manifest.json"
+    )
+    manifest_payload = {
+        "source": MK_SOURCE,
+        "collection_id": collection_id,
+        "created_at": created_at_value.to_iso8601_string(),
+        "silver_paths": [str(silver_path) for silver_path in silver_paths],
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(manifest_payload, file, ensure_ascii=False, indent=2)
+    return manifest_path
+
+
 # bronze 파일이 저장될 디렉터리를 만들고 최종 data.json 경로를 반환한다.
 def _build_bronze_path(raw_payload):
     collected_at = pendulum.parse(raw_payload["collected_at"])
