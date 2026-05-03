@@ -421,6 +421,32 @@ def _write_bronze_payload(raw_payload):
     return bronze_path
 
 
+# KIS 데이터의 Silver 변환 작업에 대한 결과 기록 파일 생성
+def _write_silver_created_manifest(collection_id, created_at, silver_paths):
+    created_at_value = pendulum.parse(str(created_at))
+    # 파일 저장 경로
+    manifest_path = (
+        LOCAL_S3_ROOT
+        / "silver"
+        / "_created_manifest"
+        / "source=kis_stock_price"
+        / f"created_date={created_at_value.format('YYYY-MM-DD')}"
+        / f"collection_id={collection_id}"
+        / "manifest.json"
+    )
+    # 이번에 생성한 Silver 데이터가 어디에 저장되었는지 기록
+    manifest_payload = {
+        "source": "kis_stock_price",
+        "collection_id": collection_id,
+        "created_at": created_at_value.to_iso8601_string(),
+        "silver_paths": [str(silver_path) for silver_path in silver_paths],
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(manifest_payload, file, ensure_ascii=False, indent=2)
+    return manifest_path
+
+
 # bronze 파일이 저장될 디렉터리를 만들고 최종 data.json 경로를 반환한다.
 def _build_bronze_path(raw_payload):
     collected_at = pendulum.parse(raw_payload["collected_at"])
