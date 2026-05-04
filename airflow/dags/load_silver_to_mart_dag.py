@@ -25,11 +25,11 @@ from mk_rss_pipeline import find_pending_mk_rss_silver_result
     tags=["stock-signal", "silver", "mart"],
 )
 def load_silver_to_mart():
-    @task(execution_timeout=timedelta(minutes=1))
+    @task(execution_timeout=timedelta(minutes=1), pool="duckdb_mart_writer")
     def ensure_loaded_file_table():
         return ensure_mart_loaded_silver_file_table()
 
-    @task(execution_timeout=timedelta(minutes=3))
+    @task(execution_timeout=timedelta(minutes=3), pool="duckdb_mart_writer")
     def load_kis_stock_price_silver():
         import duckdb
         from airflow.operators.python import get_current_context
@@ -54,7 +54,7 @@ def load_silver_to_mart():
                     loaded_count += 1
         return {"source": "kis_stock_price", "loaded_count": loaded_count, "mart_path": str(mart_path)}
 
-    @task(execution_timeout=timedelta(minutes=3))
+    @task(execution_timeout=timedelta(minutes=3), pool="duckdb_mart_writer")
     def load_mk_rss_silver():
         import duckdb
         from airflow.operators.python import get_current_context

@@ -48,6 +48,7 @@ services:
             --lastname "$${AIRFLOW_ADMIN_LASTNAME}" \
             --role Admin \
             --email "$${AIRFLOW_ADMIN_EMAIL}" || true
+          airflow pools set duckdb_mart_writer 1 "Serialize DuckDB mart writes"
           airflow variables set stock_signal_stock_code "$${STOCK_SIGNAL_STOCK_CODE}"
           airflow variables set stock_signal_aws_access_key_id "$${STOCK_SIGNAL_AWS_ACCESS_KEY_ID}"
           airflow variables set stock_signal_aws_secret_access_key "$${STOCK_SIGNAL_AWS_SECRET_ACCESS_KEY}"
