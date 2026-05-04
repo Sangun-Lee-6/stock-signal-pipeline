@@ -84,9 +84,7 @@ def write_mk_rss_silver_to_mart(silver_result):
 
 
 # MK RSS manifest 중 아직 mart에 적재되지 않은 silver 결과를 찾는다.
-def find_pending_mk_rss_silver_result(reference_time, lookback_minutes):
-    import duckdb
-
+def find_pending_mk_rss_silver_result(connection, reference_time, lookback_minutes):
     reference_at = pendulum.parse(str(reference_time))
     started_at = reference_at.subtract(minutes=int(lookback_minutes))
     manifest_root = LOCAL_S3_ROOT / "silver" / "_created_manifest" / f"source={MK_SOURCE}"
@@ -95,22 +93,20 @@ def find_pending_mk_rss_silver_result(reference_time, lookback_minutes):
     while current_date <= reference_at:
         manifest_paths.extend((manifest_root / f"created_date={current_date.format('YYYY-MM-DD')}").glob("collection_id=*/manifest.json"))
         current_date = current_date.add(days=1)
-    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
     silver_paths = []
     collection_ids = []
-    with duckdb.connect(str(mart_path), read_only=True) as connection:
-        loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", [MK_SOURCE]).fetchall()}
-        for manifest_path in sorted(manifest_paths):
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            created_at = pendulum.parse(str(manifest["created_at"]))
-            if created_at < started_at or created_at > reference_at:
+    loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", [MK_SOURCE]).fetchall()}
+    for manifest_path in sorted(manifest_paths):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        created_at = pendulum.parse(str(manifest["created_at"]))
+        if created_at < started_at or created_at > reference_at:
+            continue
+        for silver_path in manifest.get("silver_paths", []):
+            if silver_path in loaded_paths:
                 continue
-            for silver_path in manifest.get("silver_paths", []):
-                if silver_path in loaded_paths:
-                    continue
-                silver_paths.append(silver_path)
-                collection_ids.append(manifest["collection_id"])
-                loaded_paths.add(silver_path)
+            silver_paths.append(silver_path)
+            collection_ids.append(manifest["collection_id"])
+            loaded_paths.add(silver_path)
     collection_id = collection_ids[0] if collection_ids else None
     return {"collection_id": collection_id, "source_feed": MK_SOURCE_FEED, "article_count": len(silver_paths), "silver_paths": silver_paths}
 
