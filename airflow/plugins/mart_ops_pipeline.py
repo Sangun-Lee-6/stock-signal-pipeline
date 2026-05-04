@@ -94,3 +94,36 @@ def mark_silver_file_mart_loaded(connection, source, silver_path, loaded_at, dag
         "INSERT INTO ops.mart_loaded_silver_file SELECT ?, ?, CAST(? AS TIMESTAMP), ?, ? WHERE NOT EXISTS (SELECT 1 FROM ops.mart_loaded_silver_file WHERE source = ? AND silver_path = ?)",
         [source, silver_path_value, loaded_at_value, dag_id, run_id, source, silver_path_value],
     )
+
+
+# 지정 기간의 manifest에서 아직 mart에 적재되지 않은 silver path를 찾는다.
+def find_pending_manifest_paths(connection, source, start_created_date, end_created_date, max_file_count):
+    import json
+    from datetime import datetime, timedelta
+
+    started_on = datetime.strptime(str(start_created_date), "%Y-%m-%d").date()
+    ended_on = datetime.strptime(str(end_created_date), "%Y-%m-%d").date()
+    if ended_on < started_on:
+        raise ValueError("end_created_date must be greater than or equal to start_created_date")
+    max_file_count_value = int(max_file_count)
+    if max_file_count_value <= 0:
+        return []
+    loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", [source]).fetchall()}
+    pending_paths = []
+    manifest_root = LOCAL_S3_ROOT / "silver" / "_created_manifest" / f"source={source}"
+    current_date = started_on
+    while current_date <= ended_on and len(pending_paths) < max_file_count_value:
+        manifest_paths = (manifest_root / f"created_date={current_date.isoformat()}").glob("collection_id=*/manifest.json")
+        for manifest_path in sorted(manifest_paths):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for silver_path in manifest.get("silver_paths", []):
+                if silver_path in loaded_paths:
+                    continue
+                pending_paths.append({"source": source, "collection_id": manifest["collection_id"], "manifest_path": str(manifest_path), "silver_path": silver_path})
+                loaded_paths.add(silver_path)
+                if len(pending_paths) >= max_file_count_value:
+                    break
+            if len(pending_paths) >= max_file_count_value:
+                break
+        current_date += timedelta(days=1)
+    return pending_paths
