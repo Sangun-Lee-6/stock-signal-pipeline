@@ -1,7 +1,56 @@
+import fcntl
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
 LOCAL_S3_ROOT = Path("/opt/airflow/s3")
+
+
+@contextmanager # 이 함수를 with 문에서 사용할 수 있게 해줌
+def open_mart_write_lock(timeout_seconds=30, poll_interval=0.2): # lock을 최대 30초 기다림, lock 획득 시도 간격은 0.2초
+    """
+    쓰기 작업 전에 OS 파일 Lock을 잡는 Context manager
+    1. lock 파일 준비
+    2. exclusive lock 시도
+    3. 이미 누가 lock을 잡고 있다면 대기, timeout 넘으면 실패
+    4. lock 획득 시 작업 수행
+    5. with 블록 종료 시 lock 해제
+    """
+    lock_path = LOCAL_S3_ROOT / "mart" / ".stock_signal.duckdb.write.lock" # lock 대상 파일 경로(DuckDB 파일이 아니라 lock 전용 파일, DB 파일 자체에 직접 lock을 거는 것보다 운영상 명확)
+    lock_path.parent.mkdir(parents=True, exist_ok=True) # lock 파일이 위치할 디렉터리 생성
+    with lock_path.open("a+", encoding="utf-8") as lock_file: # lock 파일 열기, append 모드(파일 없으면 생성), +(읽기/쓰기 가능), 파일 내용이 중요한게 아니라 열린 fd가 중요, fcntl.flock()은 파일 경로가 아니라 열린 fd에 lock을 생성
+        deadline = time.monotonic() + timeout_seconds # 기다리는 시간 계산(데드라인)
+        # lock 획득 재시도 루프(타임아웃 조건에 걸릴 때까지, lock을 얻을 때까지 반복)
+        while True:
+            # exclusive lock 시도
+            # 열린 파일의 fd 번호를 가져오고, OS에 파일 lock 요청
+            # LOCK_EX : exclusive lock, 한 번에 하나의 프로세스만 잡을 수 있음
+            # LOCK_NB : non-blocking 모드, lock을 잡을 수 없으면 즉시 예외 발생, blocking 모드였다면 lock이 풀릴 때까지 기다렸을 것
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break # lock 획득 후 while 루프 탈출
+            except BlockingIOError:
+                if time.monotonic() >= deadline: # 타임아웃 체크, 현재 시간이 데드라인을 넘었으면 예외 발생
+                    raise TimeoutError(f"mart write lock 대기 시간이 초과되었습니다: {lock_path}")
+                time.sleep(poll_interval) # 0.2초 대기 후 다시 while True로 돌아가서 lock 시도
+        # yield 구문으로 with open_mart_write_lock() 블록 내부 코드 실행, lock이 잡힌 상태로 유지됨
+        try:
+            yield lock_path
+        # with 블록이 끝나면 finally 구문으로 lock 해제, lock_file의 fd에 걸린 lock을 해제하여 다른 프로세스가 lock을 잡을 수 있도록 함
+        # 블록에서 에러가 발생해도 finally는 실행되므로 lock이 확실히 해제됨
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN) # lock 해제, LOCK_UN 플래그로 OS에 lock 해제 요청
+    """
+       duckDB 자체의 lock을 없애는 함수가 아니라 DuckDB가 lock 에러를 발생하기 전에 애플리케이션 레벨에서 쓰기 프로세스를 하나로 직렬화
+       Airflow pool과 같이 사용
+       - OS lock은 실행된 프로세스 안에서 동시 쓰기 에러가 발생하지 않도록 보장
+       - task가 동시에 실행 큐에 올라가지 않게 하는 스케줄러에서 보장
+       - pool을 사용해서 불필요한 task 점유를 줄임
+       - pool을 사용해서 timeout 실패를 줄임(정상적인 대기를 Airflow 스케줄러에 맡기는 것)
+       - 따라서 둘 다 사용하는 것이 가장 안전하고 효율적임
+       - pool은 동시에 실행하지 않게 하는 운영 정책, OS lock은 그래도 동시에 들어오면 막는 안전 장치
+    """
 
 
 # mart 적재 완료 로그를 기록할 공용 ops 테이블을 준비한다.
