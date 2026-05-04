@@ -127,3 +127,15 @@ def find_pending_manifest_paths(connection, source, start_created_date, end_crea
                 break
         current_date += timedelta(days=1)
     return pending_paths
+
+
+# 기대한 silver 파일이 mart 소비 로그에 모두 기록됐는지 검증한다.
+def validate_mart_loaded_silver_files(connection, source, silver_paths):
+    expected_paths = [str(silver_path) for silver_path in silver_paths]
+    if not expected_paths:
+        return {"source": source, "validated_count": 0}
+    loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", [source]).fetchall()}
+    missing_paths = [silver_path for silver_path in expected_paths if silver_path not in loaded_paths]
+    if missing_paths:
+        raise ValueError(f"missing mart loaded silver file records: source={source}, silver_paths={missing_paths}")
+    return {"source": source, "validated_count": len(expected_paths)}
