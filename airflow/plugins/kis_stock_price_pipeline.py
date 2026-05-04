@@ -119,10 +119,13 @@ def write_stock_price_daily_history_bronze_to_silver(bronze_result):
     return {"collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "price_date": price_date, "silver_path": str(silver_path)}
 
 
-# KIS 현재가 manifest 중 아직 mart에 적재되지 않은 silver 결과만 찾는다.
-def find_pending_stock_price_silver_results(reference_time, lookback_minutes):
-    import duckdb
-
+def find_pending_stock_price_silver_results(connection, reference_time, lookback_minutes):
+    """
+        KIS 현재가 manifest 중 아직 mart에 적재되지 않은 silver 결과만 찾는다.
+        - 기존 DB Connection을 받음
+        - 쓰기 작업은 하지 않음, 후보만 찾아서 반환
+        - write lock 안에서 호출
+    """
     reference_at = pendulum.parse(str(reference_time))
     started_at = reference_at.subtract(minutes=int(lookback_minutes))
     manifest_root = LOCAL_S3_ROOT / "silver" / "_created_manifest" / "source=kis_stock_price"
@@ -131,22 +134,30 @@ def find_pending_stock_price_silver_results(reference_time, lookback_minutes):
     while current_date <= reference_at:
         manifest_paths.extend((manifest_root / f"created_date={current_date.format('YYYY-MM-DD')}").glob("collection_id=*/manifest.json"))
         current_date = current_date.add(days=1)
-    mart_path = LOCAL_S3_ROOT / "mart" / "stock_signal.duckdb"
     pending_results = []
-    with duckdb.connect(str(mart_path), read_only=True) as connection:
-        loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", ["kis_stock_price"]).fetchall()}
-        for manifest_path in sorted(manifest_paths):
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            created_at = pendulum.parse(str(manifest["created_at"]))
-            if created_at < started_at or created_at > reference_at:
+    loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", ["kis_stock_price"]).fetchall()}
+    for manifest_path in sorted(manifest_paths):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        created_at = pendulum.parse(str(manifest["created_at"]))
+        if created_at < started_at or created_at > reference_at:
+            continue
+        for silver_path in manifest.get("silver_paths", []):
+            # 이미 mart에 적재된 silver 파일은 건너뛴다.(idempotency)
+            if silver_path in loaded_paths:
                 continue
-            for silver_path in manifest.get("silver_paths", []):
-                if silver_path in loaded_paths:
-                    continue
-                row = connection.execute("SELECT collection_id, stock_code, stock_name, price_at FROM read_parquet(?) LIMIT 1", [silver_path]).fetchone()
-                pending_results.append({"collection_id": row[0], "stock_code": row[1], "stock_name": row[2], "price_at": row[3].isoformat() if hasattr(row[3], "isoformat") else str(row[3]), "silver_path": silver_path})
-                loaded_paths.add(silver_path)
+            row = connection.execute("SELECT collection_id, stock_code, stock_name, price_at FROM read_parquet(?) LIMIT 1", [silver_path]).fetchone()
+            # parquet 파일이 비어있거나 필요한 컬럼이 없으면 예외를 발생시켜 수동 개입을 유도한다.(데이터 문제 발견용)
+            if row is None:
+                raise ValueError(f"empty silver parquet: {silver_path}")
+            pending_results.append({"collection_id": row[0], "stock_code": row[1], "stock_name": row[2], "price_at": row[3].isoformat() if hasattr(row[3], "isoformat") else str(row[3]), "silver_path": silver_path})
+            loaded_paths.add(silver_path)
     return pending_results
+    """
+        이전 구조 : XCom으로 데이터 수집 Dag에서 mart 쓰기 Dag로 데이터를 넘기는 구조는 결합도가 컸음
+        - Dag간 결합도 증가
+        - 실패 복구 비용 증가
+        - 재처리 어려움
+    """
 
 
 # silver 저장 결과 dict를 읽어 KIS mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
