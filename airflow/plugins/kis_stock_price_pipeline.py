@@ -160,6 +160,19 @@ def find_pending_stock_price_silver_results(connection, reference_time, lookback
     """
 
 
+# 기존 connection으로 KIS 현재가 silver를 mart에 적재하고 serving view를 갱신한다.
+def insert_stock_price_silver_to_mart(connection, silver_result, loaded_at):
+    silver_path = str(silver_result["silver_path"])
+    loaded_at_value = loaded_at.isoformat() if hasattr(loaded_at, "isoformat") else str(loaded_at)
+    connection.execute("CREATE SCHEMA IF NOT EXISTS mart")
+    connection.execute("CREATE SCHEMA IF NOT EXISTS serving")
+    connection.execute("CREATE TABLE IF NOT EXISTS mart.dim_stock (stock_id BIGINT, stock_code VARCHAR, stock_name VARCHAR, market_division_code VARCHAR, market_name VARCHAR, industry_name VARCHAR, created_at TIMESTAMP, updated_at TIMESTAMP)")
+    connection.execute("CREATE TABLE IF NOT EXISTS mart.fact_stock_price (stock_id BIGINT, price_at TIMESTAMP, price_date DATE, current_price DECIMAL(18,2), open_price DECIMAL(18,2), high_price DECIMAL(18,2), low_price DECIMAL(18,2), change_rate DECIMAL(9,4), volume_accumulated BIGINT, trade_amount_accumulated DECIMAL(18,2), source VARCHAR, collection_id VARCHAR, collected_at TIMESTAMP, processed_at TIMESTAMP)")
+    connection.execute("INSERT INTO mart.dim_stock SELECT COALESCE((SELECT MAX(stock_id) FROM mart.dim_stock), 0) + ROW_NUMBER() OVER (ORDER BY src.stock_code), src.stock_code, src.stock_name, src.market_division_code, src.market_name, src.industry_name, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM (SELECT DISTINCT stock_code, stock_name, market_division_code, market_name, industry_name FROM read_parquet(?)) AS src WHERE NOT EXISTS (SELECT 1 FROM mart.dim_stock AS dim WHERE dim.stock_code = src.stock_code)", [loaded_at_value, loaded_at_value, silver_path])
+    connection.execute("INSERT INTO mart.fact_stock_price SELECT dim.stock_id, CAST(src.price_at AS TIMESTAMP), CAST(src.price_date AS DATE), CAST(src.current_price AS DECIMAL(18,2)), CAST(src.open_price AS DECIMAL(18,2)), CAST(src.high_price AS DECIMAL(18,2)), CAST(src.low_price AS DECIMAL(18,2)), CAST(src.change_rate AS DECIMAL(9,4)), CAST(src.volume_accumulated AS BIGINT), CAST(src.trade_amount_accumulated AS DECIMAL(18,2)), src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src INNER JOIN mart.dim_stock AS dim ON src.stock_code = dim.stock_code WHERE NOT EXISTS (SELECT 1 FROM mart.fact_stock_price AS fact WHERE fact.stock_id = dim.stock_id AND fact.price_at = CAST(src.price_at AS TIMESTAMP))", [loaded_at_value, silver_path])
+    connection.execute("CREATE OR REPLACE VIEW serving.v_stock_price_timeline AS SELECT stock.stock_code, stock.stock_name, price.price_at, price.price_date, price.current_price, price.open_price, price.high_price, price.low_price, price.change_rate, price.volume_accumulated, price.trade_amount_accumulated, price.source, price.collection_id, price.collected_at, price.processed_at FROM mart.fact_stock_price AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id")
+
+
 # silver 저장 결과 dict를 읽어 KIS mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
 def write_stock_price_silver_to_mart(silver_result):
     try:
