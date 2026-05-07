@@ -98,6 +98,13 @@ DuckDB는 embedded DB라 하나의 DB 파일에 여러 프로세스가 동시에
 - OS file lock으로 DuckDB connection 생성 전 write critical section 보호
 - 파일 단위 transaction으로 mart insert와 loaded marker insert를 원자적으로 처리
 
+- Airflow pool만 사용한 게 아니라 OS lock까지 사용한 이유
+  - pool은 Airflow scheduler 수준에서 writer task를 직렬화한다.
+  - 다만 pool은 DAG/task 설정에 의존하므로 새 DAG나 recovery/backfill 경로에서 누락될 수 있다.
+  - Airflow task가 아닌 수동 스크립트나 외부 프로세스의 DuckDB 접근은 pool로 제어할 수 없다.
+  - OS lock은 DuckDB write helper 내부에 있어, helper를 통해 mart에 쓰는 경로가 connection 생성 전 같은 lock을 통과한다.
+  - 따라서 pool은 운영 제어용 1차 장치이고, OS lock은 DuckDB 파일 보호를 위한 마지막 안전장치다.
+
 ### 4. source별 수집 전략 분리
 
 KIS 현재가는 장중 1분 snapshot, MK RSS는 10분 polling, KIS 일봉 이력은 날짜 단위 backfill 대상으로 다룹니다. 원천의 생성 주기와 복구 가능성이 다르기 때문에 DAG schedule, `catchup`, `execution_timeout`, `max_active_runs`를 source별로 다르게 설정했습니다.
