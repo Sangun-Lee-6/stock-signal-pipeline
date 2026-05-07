@@ -102,6 +102,8 @@ DuckDB는 embedded DB라 하나의 DB 파일에 여러 프로세스가 동시에
   - pool은 Airflow scheduler 수준에서 writer task를 직렬화한다.
   - 다만 pool은 DAG/task 설정에 의존하므로 새 DAG나 recovery/backfill 경로에서 누락될 수 있다.
   - Airflow task가 아닌 수동 스크립트나 외부 프로세스의 DuckDB 접근은 pool로 제어할 수 없다.
+  - 예를 들어 장애 대응 중 `ops.mart_loaded_silver_file`, mart row, serving view 상태를 확인하거나 보정하려고 로컬 또는 컨테이너에서 `duckdb.connect("airflow/s3/mart/stock_signal.duckdb")` 같은 one-off 스크립트를 실행할 수 있다. 이 실행은 Airflow task가 아니므로 `duckdb_mart_writer` pool을 통과하지 않는다.
+  - FastAPI 웹 앱도 같은 DuckDB 파일을 Airflow 밖 별도 프로세스에서 읽는다. 현재는 `WEB_DUCKDB_READ_ONLY=true`로 안전하게 조회하지만, 웹 쪽에 serving view 생성, 캐시 테이블 생성, 임시 분석 테이블 생성 같은 쓰기 기능이 추가되거나 설정이 바뀌면 pool로 제어할 수 없다.
   - OS lock은 DuckDB write helper 내부에 있어, helper를 통해 mart에 쓰는 경로가 connection 생성 전 같은 lock을 통과한다.
   - 따라서 pool은 운영 제어용 1차 장치이고, OS lock은 DuckDB 파일 보호를 위한 마지막 안전장치다.
 
