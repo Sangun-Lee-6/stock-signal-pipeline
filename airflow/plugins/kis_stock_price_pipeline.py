@@ -57,6 +57,35 @@ def collect_stock_price_raw():
     )
 
 
+# KIS 현재가 raw payload 구조와 API 성공 응답 여부를 검증한다.
+def validate_stock_price_raw_payload(raw_payload):
+    """
+    KIS 현재가 raw payload가 정상적인 구조와 필수 값을 갖고 있는지 검사하는 품질 체크 함수
+    """
+    from pipeline_quality_pipeline import build_quality_check_result
+    # 입력값이 dict 형태인지 확인
+    if not isinstance(raw_payload, dict):
+        return build_quality_check_result("kis_stock_price", "raw", "stock_price_raw_payload", "fail", "KIS 현재가 raw payload가 dict가 아닙니다.")
+    
+    body = raw_payload.get("response", {}).get("body") or {} # 응답 구조가 예상과 다를 경우에도 에러가 아닌 체크 실패로 처리하기 위해 안전하게 접근
+    output = body.get("output") if isinstance(body, dict) else None # output이 dict 형태가 아닐 경우에도 에러가 아닌 체크 실패로 처리하기 위해 안전하게 접근
+    stock = raw_payload.get("stock") if isinstance(raw_payload.get("stock"), dict) else {} # stock 정보가 dict 형태가 아닐 경우에도 에러가 아닌 체크 실패로 처리하기 위해 안전하게 접근
+    missing_fields = [field for field in ("collection_id", "collected_at", "stock") if not raw_payload.get(field)] # raw_payload 레벨에서 필수 값이 비어 있는지 확인
+    # output이 dict 형태가 아니거나, output 내 필수 가격 정보가 비어 있는지 확인
+    if not isinstance(output, dict):
+        missing_fields.append("response.body.output")
+    else:
+        # output 내 필수 가격 정보가 비어 있는지 확인
+        missing_fields.extend(f"response.body.output.{field}" for field in ("stck_prpr", "stck_oprc", "stck_hgpr", "stck_lwpr") if output.get(field) in (None, ""))
+    # stock 정보 내 필수 값이 비어 있는지 확인
+    if str(body.get("rt_cd")) != "0":
+        return build_quality_check_result("kis_stock_price", "raw", "stock_price_raw_payload", "fail", "KIS 현재가 raw 응답이 성공 상태가 아닙니다.", {"rt_cd": body.get("rt_cd"), "msg_cd": body.get("msg_cd"), "msg1": body.get("msg1"), "missing_fields": missing_fields})
+    # raw_payload 레벨, output 내 가격 정보, stock 정보 중 하나라도 필수 값이 비어 있다면 체크 실패로 간주하고, 어떤 값이 비어 있는지 메시지에 포함하여 반환
+    if missing_fields:
+        return build_quality_check_result("kis_stock_price", "raw", "stock_price_raw_payload", "fail", "KIS 현재가 raw payload 필수 값이 비어 있습니다.", {"missing_fields": missing_fields})
+    return build_quality_check_result("kis_stock_price", "raw", "stock_price_raw_payload", "pass", "KIS 현재가 raw payload validation passed", {"collection_id": raw_payload["collection_id"], "stock_code": stock.get("stock_code"), "rt_cd": body.get("rt_cd")})
+
+
 # 설정된 대상 종목의 일봉 이력을 조회하고 bronze 저장용 raw payload를 반환한다.
 def collect_stock_price_daily_history_raw(start_date, end_date, org_adj_prc="0"):
     if not start_date or not end_date:
@@ -82,6 +111,30 @@ def write_stock_price_raw_to_bronze(raw_payload):
     return _build_write_result(raw_payload, bronze_path)
 
 
+def validate_stock_price_bronze_result(bronze_result):
+    """
+    KIS 현재가 bronze 저장 결과 dict가 예상된 구조와 값을 갖고 있는지 검사하는 품질 체크 함수
+    """
+    from pipeline_quality_pipeline import build_quality_check_result
+
+    check_name = "stock_price_bronze_file"
+    if not isinstance(bronze_result, dict):
+        return build_quality_check_result("kis_stock_price", "bronze", check_name, "fail", "KIS 현재가 bronze_result가 dict가 아닙니다.")
+    bronze_path_value = bronze_result.get("bronze_path")
+    if not bronze_path_value:
+        return build_quality_check_result("kis_stock_price", "bronze", check_name, "fail", "KIS 현재가 bronze_path가 비어 있습니다.")
+    bronze_path = Path(bronze_path_value)
+    if not bronze_path.is_file() or bronze_path.stat().st_size <= 0:
+        return build_quality_check_result("kis_stock_price", "bronze", check_name, "fail", "KIS 현재가 bronze 파일이 없거나 비어 있습니다.", {"bronze_path": str(bronze_path)})
+    try:
+        raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return build_quality_check_result("kis_stock_price", "bronze", check_name, "fail", "KIS 현재가 bronze JSON 파싱에 실패했습니다.", {"bronze_path": str(bronze_path), "error": str(exc)})
+    if raw_payload.get("collection_id") != bronze_result.get("collection_id"):
+        return build_quality_check_result("kis_stock_price", "bronze", check_name, "fail", "KIS 현재가 bronze collection_id가 일치하지 않습니다.", {"bronze_path": str(bronze_path), "expected_collection_id": bronze_result.get("collection_id"), "actual_collection_id": raw_payload.get("collection_id")})
+    return build_quality_check_result("kis_stock_price", "bronze", check_name, "pass", "KIS 현재가 bronze file validation passed", {"bronze_path": str(bronze_path), "file_size": bronze_path.stat().st_size, "collection_id": bronze_result.get("collection_id")})
+
+
 # bronze 저장 결과 dict를 읽어 KIS silver parquet 1건을 저장하고 저장 결과를 반환한다.
 def write_stock_price_bronze_to_silver(bronze_result):
     import pandas as pd
@@ -98,6 +151,31 @@ def write_stock_price_bronze_to_silver(bronze_result):
     pd.DataFrame([{"source": raw_payload["source"], "collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "market_division_code": raw_payload["stock"]["market_division_code"], "market_name": output.get("rprs_mrkt_kor_name"), "industry_name": output.get("bstp_kor_isnm"), "price_at": raw_payload["collected_at"], "price_date": collected_at.format("YYYY-MM-DD"), "collected_at": raw_payload["collected_at"], "processed_at": processed_at, "current_price": to_number(output.get("stck_prpr")), "open_price": to_number(output.get("stck_oprc")), "high_price": to_number(output.get("stck_hgpr")), "low_price": to_number(output.get("stck_lwpr")), "base_price": to_number(output.get("stck_sdpr")), "change_value": to_number(output.get("prdy_vrss")), "change_rate": to_number(output.get("prdy_ctrt")), "volume_accumulated": to_number(output.get("acml_vol")), "trade_amount_accumulated": to_number(output.get("acml_tr_pbmn")), "per": to_number(output.get("per")), "pbr": to_number(output.get("pbr")), "eps": to_number(output.get("eps")), "bps": to_number(output.get("bps")), "is_trading_halted": to_bool(output.get("temp_stop_yn")), "is_credit_available": to_bool(output.get("crdt_able_yn"))}]).to_parquet(silver_path, index=False)
     _write_silver_created_manifest(raw_payload["collection_id"], processed_at, [silver_path])
     return {"collection_id": raw_payload["collection_id"], "stock_code": raw_payload["stock"]["stock_code"], "stock_name": raw_payload["stock"]["stock_name"], "price_at": raw_payload["collected_at"], "silver_path": str(silver_path)}
+
+
+def validate_stock_price_silver_result(silver_result):
+    """
+    KIS 현재가 silver 저장 결과 dict가 예상된 구조와 값을 갖고 있는지, silver parquet 파일이 존재하고 필수 컬럼과 데이터를 포함하고 있는지 검사하는 품질 체크 함수
+    """
+    import pandas as pd
+    from pipeline_quality_pipeline import build_quality_check_result
+
+    check_name = "stock_price_silver_file"
+    if not isinstance(silver_result, dict):
+        return build_quality_check_result("kis_stock_price", "silver", check_name, "fail", "KIS 현재가 silver_result가 dict가 아닙니다.")
+    silver_path = Path(silver_result.get("silver_path") or "")
+    if not silver_path.is_file() or silver_path.stat().st_size <= 0:
+        return build_quality_check_result("kis_stock_price", "silver", check_name, "fail", "KIS 현재가 silver parquet 파일이 없거나 비어 있습니다.", {"silver_path": str(silver_path)})
+    try:
+        silver_frame = pd.read_parquet(silver_path)
+    except Exception as exc:
+        return build_quality_check_result("kis_stock_price", "silver", check_name, "fail", "KIS 현재가 silver parquet 읽기에 실패했습니다.", {"silver_path": str(silver_path), "error": str(exc)})
+    required_columns = ["stock_code", "price_at", "current_price", "collection_id"]
+    missing_columns = [column for column in required_columns if column not in silver_frame.columns]
+    null_columns = [column for column in required_columns if column in silver_frame.columns and silver_frame[column].isna().any()]
+    if len(silver_frame) == 0 or missing_columns or null_columns:
+        return build_quality_check_result("kis_stock_price", "silver", check_name, "fail", "KIS 현재가 silver parquet 필수 데이터가 유효하지 않습니다.", {"silver_path": str(silver_path), "row_count": len(silver_frame), "missing_columns": missing_columns, "null_columns": null_columns})
+    return build_quality_check_result("kis_stock_price", "silver", check_name, "pass", "KIS 현재가 silver parquet validation passed", {"silver_path": str(silver_path), "row_count": len(silver_frame), "collection_id": silver_result.get("collection_id")})
 
 
 # bronze 저장 결과 dict를 읽어 KIS 일봉 silver parquet를 저장하고 저장 결과를 반환한다.
@@ -171,6 +249,25 @@ def insert_stock_price_silver_to_mart(connection, silver_result, loaded_at):
     connection.execute("INSERT INTO mart.dim_stock SELECT COALESCE((SELECT MAX(stock_id) FROM mart.dim_stock), 0) + ROW_NUMBER() OVER (ORDER BY src.stock_code), src.stock_code, src.stock_name, src.market_division_code, src.market_name, src.industry_name, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM (SELECT DISTINCT stock_code, stock_name, market_division_code, market_name, industry_name FROM read_parquet(?)) AS src WHERE NOT EXISTS (SELECT 1 FROM mart.dim_stock AS dim WHERE dim.stock_code = src.stock_code)", [loaded_at_value, loaded_at_value, silver_path])
     connection.execute("INSERT INTO mart.fact_stock_price SELECT dim.stock_id, CAST(src.price_at AS TIMESTAMP), CAST(src.price_date AS DATE), CAST(src.current_price AS DECIMAL(18,2)), CAST(src.open_price AS DECIMAL(18,2)), CAST(src.high_price AS DECIMAL(18,2)), CAST(src.low_price AS DECIMAL(18,2)), CAST(src.change_rate AS DECIMAL(9,4)), CAST(src.volume_accumulated AS BIGINT), CAST(src.trade_amount_accumulated AS DECIMAL(18,2)), src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src INNER JOIN mart.dim_stock AS dim ON src.stock_code = dim.stock_code WHERE NOT EXISTS (SELECT 1 FROM mart.fact_stock_price AS fact WHERE fact.stock_id = dim.stock_id AND fact.price_at = CAST(src.price_at AS TIMESTAMP))", [loaded_at_value, silver_path])
     connection.execute("CREATE OR REPLACE VIEW serving.v_stock_price_timeline AS SELECT stock.stock_code, stock.stock_name, price.price_at, price.price_date, price.current_price, price.open_price, price.high_price, price.low_price, price.change_rate, price.volume_accumulated, price.trade_amount_accumulated, price.source, price.collection_id, price.collected_at, price.processed_at FROM mart.fact_stock_price AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id")
+
+
+def validate_stock_price_mart_rows(connection, silver_result):
+    """
+    KIS 현재가 silver 결과와 매칭되는 mart의 fact_stock_price 행이 존재하는지 검증하는 품질 체크 함수
+    """
+    row = connection.execute(
+        "SELECT COUNT(*) FROM mart.fact_stock_price AS price INNER JOIN mart.dim_stock AS stock ON price.stock_id = stock.stock_id WHERE stock.stock_code = ? AND price.price_at = CAST(? AS TIMESTAMP) AND price.collection_id = ?",
+        [silver_result["stock_code"], silver_result["price_at"], silver_result["collection_id"]],
+    ).fetchone()
+    validated_count = row[0] if row else 0
+    if validated_count <= 0:
+        raise ValueError(
+            "missing KIS stock price mart row: "
+            f"stock_code={silver_result.get('stock_code')}, "
+            f"price_at={silver_result.get('price_at')}, "
+            f"collection_id={silver_result.get('collection_id')}"
+        )
+    return {"source": "kis_stock_price", "validated_count": validated_count}
 
 
 # silver 저장 결과 dict를 읽어 KIS mart 테이블과 serving view에 적재하고 저장 결과를 반환한다.
