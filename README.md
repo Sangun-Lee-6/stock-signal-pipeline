@@ -19,32 +19,32 @@
 
 ## 기술 스택
 
-| 영역          | 사용 기술                                                              |
-| ------------- | ---------------------------------------------------------------------- |
-| Orchestration | Apache Airflow 3.1.8, DAG, task dependency, dynamic task mapping, pool |
-| Processing    | Python, pandas, pyarrow/parquet                                        |
-| Storage       | Local S3-style directory, JSON, Parquet, DuckDB                        |
-| Quality/Ops   | 품질 체크 결과 파일, pending silver backlog 점검, Google Chat 알림     |
-| Serving       | DuckDB serving view, FastAPI                                           |
-| UI            | HTML, CSS, JavaScript                                                  |
-| Runtime       | Docker Compose, Airflow metadata Postgres                              |
+| 영역          | 사용 기술                                                          |
+| ------------- | ------------------------------------------------------------------ |
+| Orchestration | Apache Airflow 3.1.8                                               |
+| Processing    | Python, pandas                                                     |
+| Storage       | Local S3-style directory, JSON, Parquet, DuckDB                    |
+| Quality/Ops   | 품질 체크 결과 파일, pending silver backlog 점검, Google Chat 알림 |
+| Serving       | DuckDB serving view, FastAPI                                       |
+| UI            | HTML, CSS, JavaScript                                              |
+| Runtime       | Docker Compose, Airflow metadata Postgres                          |
 
 ### 레이어 역할
 
-| 레이어     | 역할                                                  |
-| ---------- | ----------------------------------------------------- |
-| Raw/Bronze | 외부 API/RSS 응답을 가능한 원형 그대로 JSON으로 저장  |
-| Silver     | 분석 가능한 parquet 스키마로 정제                     |
-| Manifest   | 이번 수집 run에서 생성된 silver 파일 목록 기록        |
-| Mart       | 가격, 이벤트, 분류 결과를 DuckDB 테이블로 적재        |
-| Serving    | 웹/API 조회를 위한 DuckDB view 제공                   |
-| Ops        | 품질 체크 결과와 mart 적재 상태를 파일/테이블로 관리  |
+| 레이어     | 역할                                                 |
+| ---------- | ---------------------------------------------------- |
+| Raw/Bronze | 외부 API/RSS 응답을 가능한 원형 그대로 JSON으로 저장 |
+| Silver     | 분석 가능한 parquet 스키마로 정제                    |
+| Manifest   | 이번 수집 run에서 생성된 silver 파일 목록 기록       |
+| Mart       | 가격, 이벤트, 분류 결과를 DuckDB 테이블로 적재       |
+| Serving    | 웹/API 조회를 위한 DuckDB view 제공                  |
+| Ops        | 품질 체크 결과와 mart 적재 상태를 파일/테이블로 관리 |
 
 ## 주요 DAG
 
 | DAG                                         | 주기                       | 역할                                                  |
 | ------------------------------------------- | -------------------------- | ----------------------------------------------------- |
-| `collect_kis_stock_price_raw`               | 평일 09:00-15:30, 1분 단위 | KIS 현재가 snapshot 수집, raw/bronze/silver 생성      |
+| `collect_kis_stock_price_raw`               | 평일 09:00-15:30, 1분 단위 | KIS 현재가 snapshot 수집, bronze/silver 생성          |
 | `collect_kis_stock_price_daily_history_raw` | 평일 19:00, catchup 가능   | KIS 일봉 이력 수집, silver 생성, mart 적재            |
 | `collect_mk_rss_raw`                        | 10분 단위                  | MK RSS snapshot 수집, 기사 단위 silver 생성           |
 | `load_silver_to_mart`                       | 1분 단위                   | manifest 기준 미적재 silver 파일을 DuckDB mart에 적재 |
@@ -201,7 +201,7 @@ http://localhost:8000
 - 수집과 mart 적재가 강하게 결합되는 문제를 줄이기 위해 raw/bronze/silver/mart 레이어를 분리하고, silver_created_manifest로 파일 단위 lineage를 남겼습니다.
 - DuckDB embedded DB의 동시 쓰기 lock 문제를 재현한 뒤 Airflow pool, OS file lock, transaction을 조합해 mart write 경로를 직렬화했습니다.
 - DAG 재시도와 재실행 때 중복 적재가 발생하지 않도록 ops.mart_loaded_silver_file 테이블을 기준으로 파일 단위 idempotency를 구현했습니다.
-- 짧은 장애와 긴 장애를 나눠 복구할 수 있도록 자동 lookback 적재, hourly health check, 수동 recovery DAG를 함께 설계했습니다.
+- 짧은 장애와 긴 장애를 나눠 복구할 수 있도록 hourly health check, 수동 recovery DAG를 함께 설계했습니다.
 - 비정형 뉴스 제목을 서비스에 바로 노출하지 않고 knowledge graph와 규칙 기반 evidence로 시장전체, 섹터, 기업 이벤트로 표준화했습니다.
 - DuckDB serving view와 FastAPI를 연결해 파이프라인 산출물을 웹 화면에서 검증할 수 있게 구성했습니다.
 
@@ -212,10 +212,3 @@ http://localhost:8000
 - Google Chat 알림은 실패 콜백 중심이며, 별도 metric 저장소나 SLA 대시보드는 아직 없습니다.
 - 로컬 S3-style 디렉터리를 사용하고 있어 실제 AWS S3 배포 시 credentials, object store I/O, 권한 정책 검증이 필요합니다.
 - KG 기반 분류는 결정적이지만, 분류 품질을 검증하는 테스트 데이터셋과 평가 지표가 아직 부족합니다.
-
-## 관련 문서
-
-- [오케스트레이션 주요 엔지니어링](docs/data-engineering-lifecycle/오케스트레이션%20주요%20엔지니어링.md)
-- [데이터 수집 주요 엔지니어링](docs/data-engineering-lifecycle/데이터%20수집%20주요%20엔지니어링.md)
-- [데이터 변환 엔지니어링](docs/data-engineering-lifecycle/데이터%20변환%20엔지니어링%28해석%20가능한%20형태로%20변환하기%29.md)
-- [DuckDB 동시 쓰기 문제 해결 과정](docs/data-engineering-lifecycle/DuckDB%20동시%20쓰기%20문제%20해결%20과정.md)
