@@ -27,10 +27,61 @@ def collect_mk_rss_raw():
     return _build_raw_payload(collected_at, collection_id, rss_response)
 
 
+def validate_mk_rss_raw_payload(raw_payload):
+    """
+    MK RSS raw payload 구조와 RSS XML 응답 여부를 검증하는 품질 체크 함수
+    """
+    import xml.etree.ElementTree as ET
+    from pipeline_quality_pipeline import build_quality_check_result
+
+    check_name = "mk_rss_raw_payload"
+    if not isinstance(raw_payload, dict):
+        return build_quality_check_result(MK_SOURCE, "raw", check_name, "fail", "MK RSS raw payload가 dict가 아닙니다.")
+    missing_fields = [field for field in ("collection_id", "collected_at") if not raw_payload.get(field)]
+    rss_body = raw_payload.get("response", {}).get("body")
+    if not rss_body:
+        missing_fields.append("response.body")
+    try:
+        root = ET.fromstring(rss_body or "")
+        channel = root.find("channel")
+        item_count = len(channel.findall("item")) if channel is not None else 0
+    except ET.ParseError as exc:
+        return build_quality_check_result(MK_SOURCE, "raw", check_name, "fail", "MK RSS raw XML 파싱에 실패했습니다.", {"missing_fields": missing_fields, "error": str(exc)})
+    if missing_fields or channel is None or item_count == 0:
+        return build_quality_check_result(MK_SOURCE, "raw", check_name, "fail", "MK RSS raw payload 필수 값 또는 RSS item이 비어 있습니다.", {"missing_fields": missing_fields, "has_channel": channel is not None, "item_count": item_count})
+    return build_quality_check_result(MK_SOURCE, "raw", check_name, "pass", "MK RSS raw payload validation passed", {"collection_id": raw_payload["collection_id"], "item_count": item_count})
+
+
 # 수집한 MK RSS raw payload를 bronze 경로에 그대로 저장한다.
 def write_mk_rss_raw_to_bronze(raw_payload):
     bronze_path = _write_bronze_payload(raw_payload)
     return _build_write_result(raw_payload, bronze_path)
+
+
+# MK RSS bronze 저장 결과와 JSON 파일 상태를 검증한다.
+def validate_mk_rss_bronze_result(bronze_result):
+    import xml.etree.ElementTree as ET
+    from pipeline_quality_pipeline import build_quality_check_result
+
+    check_name = "mk_rss_bronze_file"
+    if not isinstance(bronze_result, dict):
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze_result가 dict가 아닙니다.")
+    bronze_path_value = bronze_result.get("bronze_path")
+    if not bronze_path_value:
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze_path가 비어 있습니다.")
+    bronze_path = Path(bronze_path_value)
+    if not bronze_path.is_file() or bronze_path.stat().st_size <= 0:
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze 파일이 없거나 비어 있습니다.", {"bronze_path": str(bronze_path)})
+    try:
+        raw_payload = json.loads(bronze_path.read_text(encoding="utf-8"))
+        ET.fromstring(raw_payload.get("response", {}).get("body") or "")
+    except json.JSONDecodeError as exc:
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze JSON 파싱에 실패했습니다.", {"bronze_path": str(bronze_path), "error": str(exc)})
+    except ET.ParseError as exc:
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze RSS XML 파싱에 실패했습니다.", {"bronze_path": str(bronze_path), "error": str(exc)})
+    if raw_payload.get("collection_id") != bronze_result.get("collection_id"):
+        return build_quality_check_result(MK_SOURCE, "bronze", check_name, "fail", "MK RSS bronze collection_id가 일치하지 않습니다.", {"bronze_path": str(bronze_path), "expected_collection_id": bronze_result.get("collection_id"), "actual_collection_id": raw_payload.get("collection_id")})
+    return build_quality_check_result(MK_SOURCE, "bronze", check_name, "pass", "MK RSS bronze file validation passed", {"bronze_path": str(bronze_path), "file_size": bronze_path.stat().st_size, "collection_id": bronze_result.get("collection_id")})
 
 
 # bronze 저장 결과 dict를 읽어 RSS 기사 단위 silver parquet들로 저장하고 저장 결과를 반환한다.
@@ -61,6 +112,42 @@ def write_mk_rss_bronze_to_silver(bronze_result):
     return {"collection_id": raw_payload["collection_id"], "source_feed": raw_payload["source_feed"], "article_count": len(silver_paths), "silver_paths": silver_paths}
 
 
+def validate_mk_rss_silver_result(silver_result):
+    """
+    MK RSS silver 저장 결과 dict의 구조와 silver_paths의 각 parquet 파일이 유효한지 검증하는 품질 체크 함수
+    """
+    import pandas as pd
+    from pipeline_quality_pipeline import build_quality_check_result
+
+    check_name = "mk_rss_silver_file"
+    if not isinstance(silver_result, dict):
+        return build_quality_check_result(MK_SOURCE, "silver", check_name, "fail", "MK RSS silver_result가 dict가 아닙니다.")
+    silver_paths = silver_result.get("silver_paths") or []
+    article_count = int(silver_result.get("article_count") or 0)
+    if article_count != len(silver_paths) or not silver_paths:
+        return build_quality_check_result(MK_SOURCE, "silver", check_name, "fail", "MK RSS silver_paths 개수와 article_count가 유효하지 않습니다.", {"article_count": article_count, "silver_path_count": len(silver_paths)})
+    required_columns = ["article_id", "title", "published_at", "collection_id"]
+    invalid_files = []
+    total_row_count = 0
+    for silver_path_value in silver_paths:
+        silver_path = Path(silver_path_value)
+        if not silver_path.is_file() or silver_path.stat().st_size <= 0:
+            invalid_files.append({"silver_path": str(silver_path), "error": "missing_or_empty_file"})
+            continue
+        try:
+            silver_frame = pd.read_parquet(silver_path)
+        except Exception as exc:
+            invalid_files.append({"silver_path": str(silver_path), "error": str(exc)})
+            continue
+        missing_columns = [column for column in required_columns if column not in silver_frame.columns]
+        total_row_count += len(silver_frame)
+        if len(silver_frame) == 0 or missing_columns:
+            invalid_files.append({"silver_path": str(silver_path), "row_count": len(silver_frame), "missing_columns": missing_columns})
+    if invalid_files:
+        return build_quality_check_result(MK_SOURCE, "silver", check_name, "fail", "MK RSS silver parquet 필수 데이터가 유효하지 않습니다.", {"invalid_files": invalid_files})
+    return build_quality_check_result(MK_SOURCE, "silver", check_name, "pass", "MK RSS silver parquet validation passed", {"article_count": article_count, "silver_path_count": len(silver_paths), "row_count": total_row_count})
+
+
 # 기존 connection으로 MK RSS silver를 mart에 적재하고 serving view를 갱신한다.
 def insert_mk_rss_silver_to_mart(connection, silver_result, loaded_at):
     loaded_at_value = loaded_at.isoformat() if hasattr(loaded_at, "isoformat") else str(loaded_at)
@@ -75,6 +162,23 @@ def insert_mk_rss_silver_to_mart(connection, silver_result, loaded_at):
         connection.execute("INSERT INTO mart.fact_market_event SELECT 'mk_rss:' || src.article_id, source_dim.event_source_id, NULL, 'market', CAST(src.published_at AS TIMESTAMP), CAST(src.published_date AS DATE), COALESCE(src.standardized_title, src.title), src.description, src.article_url, src.article_id, TRUE, src.source, src.collection_id, CAST(src.collected_at AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src CROSS JOIN (SELECT event_source_id FROM mart.dim_event_source WHERE event_source_code = 'mk_rss_news') AS source_dim WHERE NOT EXISTS (SELECT 1 FROM mart.fact_market_event AS fact WHERE fact.event_id = 'mk_rss:' || src.article_id AND fact.event_scope = 'market')", [loaded_at_value, silver_path])
         connection.execute("INSERT INTO mart.fact_market_event_classification SELECT 'mk_rss:' || src.article_id, src.standardized_title, src.impact_scope, src.scope_evidence, src.driver_category, src.driver_evidence, src.impact_direction, src.direction_evidence, src.matched_entities, CAST(? AS TIMESTAMP), CAST(? AS TIMESTAMP) FROM read_parquet(?) AS src WHERE NOT EXISTS (SELECT 1 FROM mart.fact_market_event_classification AS classification WHERE classification.event_id = 'mk_rss:' || src.article_id)", [loaded_at_value, loaded_at_value, silver_path])
     connection.execute("CREATE OR REPLACE VIEW serving.v_stock_event_timeline AS SELECT stock.stock_code, stock.stock_name, source_dim.event_source_code, source_dim.event_source_name, source_dim.event_source_type, event.event_id, event.event_scope, event.event_at, event.event_date, event.event_title, event.event_summary, event.event_url, event.source_record_id, event.is_main_event, event.source, event.collection_id, event.collected_at, event.processed_at, classification.standardized_title, classification.impact_scope, classification.scope_evidence, classification.driver_category, classification.driver_evidence, classification.impact_direction, classification.direction_evidence, classification.matched_entities FROM mart.fact_market_event AS event INNER JOIN mart.dim_event_source AS source_dim ON event.event_source_id = source_dim.event_source_id LEFT JOIN mart.dim_stock AS stock ON event.stock_id = stock.stock_id LEFT JOIN mart.fact_market_event_classification AS classification ON event.event_id = classification.event_id")
+
+
+def validate_mk_rss_mart_rows(connection, silver_path):
+    """
+    MK RSS silver parquet 파일의 각 기사가 mart.fact_market_event 테이블에 적재됐는지 검증하는 품질 체크 함수
+    """
+    validation_row = connection.execute(
+        "SELECT COUNT(*) AS expected_count, COALESCE(SUM(CASE WHEN EXISTS (SELECT 1 FROM mart.fact_market_event AS fact WHERE fact.event_id = 'mk_rss:' || src.article_id AND fact.source_record_id = src.article_id AND fact.collection_id = src.collection_id) THEN 0 ELSE 1 END), 0) AS missing_count FROM read_parquet(?) AS src",
+        [str(silver_path)],
+    ).fetchone()
+    expected_count = validation_row[0] if validation_row else 0
+    missing_count = validation_row[1] if validation_row else 0
+    if expected_count <= 0:
+        raise ValueError(f"empty MK RSS silver parquet: silver_path={silver_path}")
+    if missing_count > 0:
+        raise ValueError(f"missing MK RSS mart rows: silver_path={silver_path}, missing_count={missing_count}")
+    return {"source": MK_SOURCE, "validated_count": expected_count}
 
 
 # silver 저장 결과 dict를 읽어 RSS 기사들을 DuckDB mart 이벤트 테이블과 serving view에 적재한다.
