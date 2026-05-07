@@ -129,8 +129,10 @@ def find_pending_manifest_paths(connection, source, start_created_date, end_crea
     return pending_paths
 
 
-# 기대한 silver 파일이 mart 소비 로그에 모두 기록됐는지 검증한다.
 def validate_mart_loaded_silver_files(connection, source, silver_paths):
+    """
+    mart에 적재된 silver 파일이 manifest의 silver_paths와 일치하는지 검증한다.
+    """
     expected_paths = [str(silver_path) for silver_path in silver_paths]
     if not expected_paths:
         return {"source": source, "validated_count": 0}
@@ -139,3 +141,43 @@ def validate_mart_loaded_silver_files(connection, source, silver_paths):
     if missing_paths:
         raise ValueError(f"missing mart loaded silver file records: source={source}, silver_paths={missing_paths}")
     return {"source": source, "validated_count": len(expected_paths)}
+
+
+def summarize_pending_silver_backlog(connection, reference_time, lookback_minutes, sources=None):
+    """
+    지정 기간의 manifest와 mart 적재 로그를 비교해 source별 pending silver 파일 수를 요약한다.
+    """
+    import json
+    import pendulum
+
+    reference_at = pendulum.parse(str(reference_time))
+    started_at = reference_at.subtract(minutes=int(lookback_minutes))
+    source_values = [sources] if isinstance(sources, str) else list(sources or ["kis_stock_price", "mk_rss"])
+    source_summaries = {}
+    total_pending_count = 0
+    for source in source_values:
+        loaded_paths = {row[0] for row in connection.execute("SELECT silver_path FROM ops.mart_loaded_silver_file WHERE source = ?", [source]).fetchall()}
+        pending_count = 0
+        silver_file_count = 0
+        manifest_count = 0
+        oldest_pending_created_at = None
+        manifest_root = LOCAL_S3_ROOT / "silver" / "_created_manifest" / f"source={source}"
+        current_date = started_at.start_of("day")
+        while current_date <= reference_at:
+            for manifest_path in sorted((manifest_root / f"created_date={current_date.format('YYYY-MM-DD')}").glob("collection_id=*/manifest.json")):
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                created_at = pendulum.parse(str(manifest["created_at"]))
+                if created_at < started_at or created_at > reference_at:
+                    continue
+                manifest_count += 1
+                for silver_path in manifest.get("silver_paths", []):
+                    silver_file_count += 1
+                    if silver_path in loaded_paths:
+                        continue
+                    pending_count += 1
+                    oldest_pending_created_at = created_at if oldest_pending_created_at is None or created_at < oldest_pending_created_at else oldest_pending_created_at
+            current_date = current_date.add(days=1)
+        pending_age_minutes = reference_at.diff(oldest_pending_created_at).in_minutes() if oldest_pending_created_at else 0
+        total_pending_count += pending_count
+        source_summaries[source] = {"manifest_count": manifest_count, "silver_file_count": silver_file_count, "pending_count": pending_count, "oldest_pending_created_at": oldest_pending_created_at.to_iso8601_string() if oldest_pending_created_at else None, "pending_age_minutes": pending_age_minutes, "has_stale_backlog": pending_count > 0 and pending_age_minutes >= int(lookback_minutes)}
+    return {"checked_from": started_at.to_iso8601_string(), "checked_to": reference_at.to_iso8601_string(), "lookback_minutes": int(lookback_minutes), "total_pending_count": total_pending_count, "sources": source_summaries}
