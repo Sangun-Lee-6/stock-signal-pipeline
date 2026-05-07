@@ -5,6 +5,7 @@ import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+from google_chat_alert_pipeline import notify_google_chat_on_failure
 from kis_stock_price_pipeline import insert_stock_price_silver_to_mart
 from mart_ops_pipeline import (
     ensure_mart_loaded_silver_file_table,
@@ -45,7 +46,7 @@ def recover_silver_to_mart(**context):
                 loaded_count += 1
     return {"source": source, "loaded_count": loaded_count, "mart_path": str(mart_path)}
 
-
+# TODO: @Dag 데코레이터로 변경
 with DAG(
     dag_id="recover_silver_to_mart",
     schedule=None,
@@ -56,6 +57,7 @@ with DAG(
     default_args={
         "owner": "airflow",
         "retries": 0,
+        "on_failure_callback": notify_google_chat_on_failure, # task 실패 시 Google Chat으로 알림 보내는 콜백 함수 지정
     },
     params={
         "source": "kis_stock_price",
